@@ -1,0 +1,13 @@
+{
+  "files.exclude": {
+    "**/.agents": true,
+    "**/.git": true,
+    "**/.pytest_cache": true,
+    "**/.pytest-tmp": true,
+    "**/.test-runtime": true,
+    "**/.venv": true,
+    "**/__pycache__": true
+  },
+  "explorer.excludeGitIgnore": false,
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe"
+}

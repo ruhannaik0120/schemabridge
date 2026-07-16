@@ -1,0 +1,3 @@
+Read 00_BASIC_INSTRUCTIONS.md completely before starting.
+
+Ask the user for the Jira ticket key. Use Atlassian MCP to retrieve the ticket context, create poc_runs/<ticket_id>/, and save the organized context to ticket_context.md. Ask the user to review the saved context and explicitly confirm that it is complete. Do not continue to QA planning until the user confirms it. After confirmation, continue the human-in-the-loop workflow in 00_BASIC_INSTRUCTIONS.md, including approval before SQL execution, every profile switch, and final report export.

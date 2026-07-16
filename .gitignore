@@ -1,0 +1,55 @@
+﻿# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp/
+.test-runtime/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets and local credentials
+.env
+.env.*
+!*.env.example
+!**/.env.example
+
+# Logs, generated reports, and runtime artifacts
+*.log
+logs/
+log/
+reports/
+output/
+outputs/
+*.xlsx
+*.xls
+
+# Generated E2E PoC run artifacts; keep only folder docs/placeholders
+poc_runs/*
+!poc_runs/.gitkeep
+!poc_runs/README.md
+
+# Database dumps and local data files
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+*.backup
+*.dump
+*.dmp
+*.parquet
+*.pkl
+
+# Local tool state
+.agents/
+.codex/
+
+# OS/editor noise
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

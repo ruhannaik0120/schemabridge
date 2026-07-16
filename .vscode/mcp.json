@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "mcp-execution-framework": {
+      "type": "stdio",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["${workspaceFolder}\\clean_mcp\\server.py"],
+      "cwd": "${workspaceFolder}\\clean_mcp"
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "artifact_root": "poc_runs",
+  "required_files": [
+    "ticket_context.md",
+    "qa_plan.md",
+    "generated_queries.sql",
+    "approval_log.md",
+    "run_log.md",
+    "execution_result.json"
+  ],
+  "output_folder": "output",
+  "execution_result_schema_version": "1.0",
+  "validation_statuses": [
+    "passed",
+    "failed",
+    "executed_not_evaluated",
+    "execution_failed"
+  ],
+  "supported_export_formats": [
+    "json_only",
+    "html",
+    "excel",
+    "both"
+  ],
+  "human_approval_checkpoints": [
+    {
+      "id": "ticket_context_complete",
+      "required_before": "qa_planning",
+      "description": "The user confirms that the retrieved Jira context is complete enough for QA planning."
+    },
+    {
+      "id": "sql_execution",
+      "required_before": "each_sql_execution",
+      "description": "The user approves the generated SQL before it is sent to the database MCP."
+    },
+    {
+      "id": "database_profile_switch",
+      "required_before": "each_profile_switch",
+      "description": "The user approves switching to another database system or named profile."
+    },
+    {
+      "id": "final_report_export",
+      "required_before": "html_or_excel_report_generation",
+      "description": "The user chooses and approves the final export format before report files are generated."
+    }
+  ],
+  "mcp_boundaries": {
+    "atlassian_mcp": "Jira ticket context retrieval only.",
+    "database_mcp": "Database profile selection, connection checks, metadata inspection, and approved query execution only.",
+    "workflow_layer": "Coordinates the E2E run and stores artifacts outside clean_mcp.",
+    "credentials": "Keep credentials in approved secret or database-profile configuration; never store them in run artifacts."
+  }
+}
