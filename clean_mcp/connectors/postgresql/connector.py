@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import contextlib
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from config import Config, ConfigError, ConnectionConfig
 from connectors.base import DatabaseConnector, unique_column_names
 
+if TYPE_CHECKING:
+    from models.connection_profile import ConnectionProfile
+
 
 class PostgreSQLConnector(DatabaseConnector):
     """Connector implementation for PostgreSQL via psycopg."""
+
+    profile_db_type = "postgresql"
 
     def _driver(self):
         """Load the optional PostgreSQL driver only when selected."""
@@ -23,9 +28,11 @@ class PostgreSQLConnector(DatabaseConnector):
             raise ConfigError("Install psycopg[binary] to use the PostgreSQL connector.") from exc
         return psycopg
 
-    def _profile(self) -> ConnectionConfig:
+    def _profile(self) -> ConnectionConfig | ConnectionProfile:
         """Return the active neutral profile after checking host configuration."""
-        profile = Config.connection_config()
+        profile = self._connection_profile
+        if profile is None:
+            profile = Config.connection_config()
         if not profile.host:
             raise ConfigError("DB_HOST is required for the PostgreSQL connector.")
         return profile
@@ -36,12 +43,16 @@ class PostgreSQLConnector(DatabaseConnector):
 
     def _connection_kwargs(
         self,
-        profile: ConnectionConfig,
+        profile: ConnectionConfig | ConnectionProfile,
         database: str,
         timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
         """Translate framework configuration into psycopg arguments."""
-        options = dict(profile.connection_options or {})
+        options = (
+            profile.connection_options_copy()
+            if self._connection_profile is not None
+            else dict(profile.connection_options or {})
+        )
         port = int(options.pop("port", 5432))
         existing_server_options = str(options.pop("options", "")).strip()
         effective_timeout = timeout_seconds if timeout_seconds is not None else profile.timeout_seconds

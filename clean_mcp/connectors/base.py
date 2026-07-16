@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar
+
+if TYPE_CHECKING:
+    from models.connection_profile import ConnectionProfile
 
 
 def unique_column_names(columns: list[object]) -> list[str]:
@@ -31,6 +34,20 @@ class DatabaseConnector(ABC):
     one connector implementation and one factory registration while leaving
     the shared execution, logging, response, and profile-switching code intact.
     """
+
+    profile_db_type: ClassVar[str] = ""
+
+    def __init__(self, *, profile: ConnectionProfile | None = None) -> None:
+        """Bind an optional immutable profile without exposing its values."""
+
+        if profile is not None:
+            from models.connection_profile import ConnectionProfile
+
+            if not isinstance(profile, ConnectionProfile):
+                raise TypeError("Injected profile must be a ConnectionProfile.")
+            if not self.profile_db_type or profile.db_type != self.profile_db_type:
+                raise ValueError("Injected profile does not match the connector type.")
+        self._connection_profile = profile
 
     @abstractmethod
     def connect(self, database: str | None = None, timeout_seconds: int | None = None) -> Any:
