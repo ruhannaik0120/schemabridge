@@ -49,6 +49,15 @@ class DatabaseConnector(ABC):
                 raise ValueError("Injected profile does not match the connector type.")
         self._connection_profile = profile
 
+    def matches_profile(self, profile: object) -> bool:
+        """Return whether this connector is bound to the supplied profile."""
+
+        if self._connection_profile is None:
+            return False
+        from models.connection_profile import ConnectionProfile
+
+        return isinstance(profile, ConnectionProfile) and self._connection_profile == profile
+
     @abstractmethod
     def connect(self, database: str | None = None, timeout_seconds: int | None = None) -> Any:
         """Open a connection to the target database."""
