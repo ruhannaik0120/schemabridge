@@ -52,6 +52,22 @@ def optional_nullable(value: Any) -> bool | None:
     return None
 
 
+def optional_bool(value: Any) -> bool | None:
+    """Normalize common metadata boolean markers without inventing a value."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"yes", "y", "true", "t", "1"}:
+            return True
+        if normalized in {"no", "n", "false", "f", "0"}:
+            return False
+    return None
+
+
 def normalized_native_type(native_type: str | None) -> str:
     """Create a matching-only type name while retaining the original elsewhere."""
 
