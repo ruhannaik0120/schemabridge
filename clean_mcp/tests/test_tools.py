@@ -83,8 +83,12 @@ class FakeService:
 def test_tool_wrappers_return_structured_payload(monkeypatch):
     fake_service = FakeService()
     monkeypatch.setattr(connection_tools, "query_service", fake_service)
-    monkeypatch.setattr(metadata_tools, "query_service", fake_service)
     monkeypatch.setattr(query_tools, "query_service", fake_service)
+    monkeypatch.setattr(
+        metadata_tools,
+        "invoke_query_service",
+        lambda *, profile_id, tool_name, operation: operation(fake_service).to_dict(),
+    )
 
     test_payload = connection_tools.test_connection(environment="DEV")
     health_payload = connection_tools.health(environment="DEV")
