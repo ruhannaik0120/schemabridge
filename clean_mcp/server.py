@@ -105,10 +105,18 @@ def tool_health(environment: str = "", timeout_seconds: int | None = None) -> st
 
 
 @mcp.tool()
-def tool_list_databases(environment: str = "", timeout_seconds: int | None = None) -> str:
+def tool_list_databases(
+    environment: str = "",
+    timeout_seconds: int | None = None,
+    profile_id: str | None = None,
+) -> str:
     """List databases for the selected connector."""
 
-    return json.dumps(list_databases(environment, timeout_seconds), indent=2, default=str)
+    return json.dumps(
+        list_databases(environment, timeout_seconds, profile_id=profile_id),
+        indent=2,
+        default=str,
+    )
 
 
 @mcp.tool()
@@ -117,10 +125,15 @@ def tool_list_tables(
     schema: str = "",
     environment: str = "",
     timeout_seconds: int | None = None,
+    profile_id: str | None = None,
 ) -> str:
     """List tables in a database, optionally filtered by schema."""
 
-    return json.dumps(list_tables(database, schema, environment, timeout_seconds), indent=2, default=str)
+    return json.dumps(
+        list_tables(database, schema, environment, timeout_seconds, profile_id=profile_id),
+        indent=2,
+        default=str,
+    )
 
 
 @mcp.tool()
@@ -130,10 +143,15 @@ def tool_describe_table(
     schema: str = "",
     environment: str = "",
     timeout_seconds: int | None = None,
+    profile_id: str | None = None,
 ) -> str:
     """Return table metadata for a single table."""
 
-    return json.dumps(describe_table(database, table, schema, environment, timeout_seconds), indent=2, default=str)
+    return json.dumps(
+        describe_table(database, table, schema, environment, timeout_seconds, profile_id=profile_id),
+        indent=2,
+        default=str,
+    )
 
 
 @mcp.tool()
@@ -145,11 +163,21 @@ def tool_suggest_columns(
     environment: str = "",
     timeout_seconds: int | None = None,
     limit: int = 5,
+    profile_id: str | None = None,
 ) -> str:
     """Rank similar real columns without rewriting or executing SQL."""
 
     return json.dumps(
-        suggest_columns(table, missing_column, database, schema, environment, timeout_seconds, limit),
+        suggest_columns(
+            table,
+            missing_column,
+            database,
+            schema,
+            environment,
+            timeout_seconds,
+            limit,
+            profile_id=profile_id,
+        ),
         indent=2,
         default=str,
     )
