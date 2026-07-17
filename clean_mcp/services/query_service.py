@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import os
+from threading import Lock
 from time import perf_counter
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from logger import logger, reset_environment, reset_request_id, set_environment,
 from models.connection_profile import ConnectionProfile
 from models.errors import ErrorCode, StructuredError
 from models.responses import ToolResponse
+from services.profile_registry import ProfileRegistry
 from services.runtime_state import runtime_lock, runtime_metadata
 from validation.sql_guard import validate_query
 
@@ -946,12 +948,50 @@ class QueryService:
 
 
 _QUERY_SERVICE: QueryService | None = None
+_PROFILE_REGISTRY: ProfileRegistry | None = None
+_PROFILE_QUERY_SERVICES: dict[str, QueryService] = {}
+_PROFILE_QUERY_SERVICE_LOCK = Lock()
 
 
-def get_query_service() -> QueryService:
-    """Return the process-wide service used by stateless MCP tool wrappers."""
+def _load_profile_registry() -> ProfileRegistry:
+    """Load one immutable snapshot of the existing named-profile document."""
 
-    global _QUERY_SERVICE
+    return ProfileRegistry.from_json(os.getenv("DB_PROFILES_JSON", ""))
+
+
+def _close_profile_query_services(services: list[QueryService]) -> None:
+    """Close detached named services without exposing connector failures."""
+
+    for service in services:
+        try:
+            service.connector.close()
+        except Exception:
+            logger.error("Failed to close a cached profile-bound query service")
+
+
+def get_query_service(profile_id: str | None = None) -> QueryService:
+    """Return the legacy singleton or a named, profile-bound cached service."""
+
+    global _PROFILE_REGISTRY, _QUERY_SERVICE
+    if profile_id is not None:
+        with _PROFILE_QUERY_SERVICE_LOCK:
+            registry = _PROFILE_REGISTRY
+            if registry is None:
+                registry = _load_profile_registry()
+                _PROFILE_REGISTRY = registry
+
+            profile = registry.resolve(profile_id)
+            cache_key = profile.normalized_profile_id
+            service = _PROFILE_QUERY_SERVICES.get(cache_key)
+            if service is None:
+                try:
+                    service = QueryService(profile=profile)
+                except Exception:
+                    logger.error("Failed to create a cached profile-bound query service")
+                    raise ConfigError("Unable to create a service for the selected connection profile") from None
+                _PROFILE_QUERY_SERVICES[cache_key] = service
+            return service
+
     with runtime_lock:
         # The service is reused during normal operation and explicitly discarded
         # by profile switching when a different connector is required.
@@ -968,3 +1008,31 @@ def reset_query_service() -> None:
         if _QUERY_SERVICE is not None:
             _QUERY_SERVICE.connector.close()
         _QUERY_SERVICE = None
+
+
+def reset_profile_query_services(profile_id: str | None = None) -> None:
+    """Detach and close named services as an explicit lifecycle operation.
+
+    Reset is not intended to close a service safely while that same service has
+    an in-flight database operation. Reference counting is intentionally out of
+    scope for this cache foundation.
+    """
+
+    global _PROFILE_REGISTRY
+    detached: list[QueryService] = []
+    with _PROFILE_QUERY_SERVICE_LOCK:
+        if profile_id is None:
+            detached = list(_PROFILE_QUERY_SERVICES.values())
+            _PROFILE_QUERY_SERVICES.clear()
+            _PROFILE_REGISTRY = None
+        else:
+            registry = _PROFILE_REGISTRY
+            if registry is None:
+                registry = _load_profile_registry()
+                _PROFILE_REGISTRY = registry
+            profile = registry.resolve(profile_id)
+            service = _PROFILE_QUERY_SERVICES.pop(profile.normalized_profile_id, None)
+            if service is not None:
+                detached.append(service)
+
+    _close_profile_query_services(detached)
