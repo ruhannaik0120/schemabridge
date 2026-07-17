@@ -57,3 +57,24 @@ class ConnectorFactory:
             )
 
         return connector_class()
+
+    @staticmethod
+    def create_for_profile(profile: object) -> DatabaseConnector:
+        """Build a connector bound exclusively to an immutable profile."""
+
+        # Keep this import local: ConnectionProfile reads the connector-name
+        # registry from this module while it is imported.
+        from models.connection_profile import ConnectionProfile
+
+        if not isinstance(profile, ConnectionProfile):
+            raise TypeError("profile must be a ConnectionProfile.")
+
+        module_path = SUPPORTED_CONNECTORS.get(profile.db_type)
+        if module_path is None:
+            raise ValueError("The profile selects an unsupported connector type.")
+
+        module = import_module(module_path)
+        connector_class = getattr(module, "Connector", None)
+        if connector_class is None:
+            raise ValueError("The selected connector module is invalid.")
+        return connector_class(profile=profile)

@@ -8,10 +8,13 @@ network access are unavailable.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from config import Config, ConnectionConfig
 from connectors.base import DatabaseConnector
+
+if TYPE_CHECKING:
+    from models.connection_profile import ConnectionProfile
 
 _DEMO_DATABASES = [
     {"name": "qa_demo"},
@@ -60,8 +63,12 @@ _DEMO_ROWS = {
 class DemoConnector(DatabaseConnector):
     """Deterministic connector used for offline demonstrations only."""
 
-    def _profile(self) -> ConnectionConfig:
+    profile_db_type = "demo"
+
+    def _profile(self) -> ConnectionConfig | ConnectionProfile:
         """Return the same neutral configuration used by live connectors."""
+        if self._connection_profile is not None:
+            return self._connection_profile
         return Config.connection_config()
 
     def _target_database(self, database: str | None) -> str:

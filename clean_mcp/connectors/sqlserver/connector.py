@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import contextlib
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from config import Config, ConfigError, ConnectionConfig
 from connectors.base import DatabaseConnector, unique_column_names
 from logger import logger
 
+if TYPE_CHECKING:
+    from models.connection_profile import ConnectionProfile
+
 
 class SQLServerConnector(DatabaseConnector):
     """Connector implementation for SQL Server via pyodbc."""
+
+    profile_db_type = "sqlserver"
 
     @staticmethod
     def _odbc_value(value: object) -> str:
@@ -36,9 +41,11 @@ class SQLServerConnector(DatabaseConnector):
         """Return the installed pyodbc version for diagnostics."""
         return self._driver().version
 
-    def _profile(self) -> ConnectionConfig:
+    def _profile(self) -> ConnectionConfig | ConnectionProfile:
         """Return the active profile after checking SQL Server requirements."""
-        profile = Config.connection_config()
+        profile = self._connection_profile
+        if profile is None:
+            profile = Config.connection_config()
         if not profile.host:
             raise ConfigError("DB_HOST is required for the SQL Server connector.")
         if not profile.database:
@@ -49,9 +56,13 @@ class SQLServerConnector(DatabaseConnector):
         """Select an explicit database or the configured default."""
         return (database or fallback or "master").strip() or "master"
 
-    def _connection_options(self, profile: ConnectionConfig) -> str:
+    def _connection_options(self, profile: ConnectionConfig | ConnectionProfile) -> str:
         """Build secure ODBC options from generic and SQL-specific settings."""
-        options = dict(profile.connection_options or {})
+        options = (
+            profile.connection_options_copy()
+            if self._connection_profile is not None
+            else dict(profile.connection_options or {})
+        )
         driver = str(options.pop("driver", "ODBC Driver 18 for SQL Server")).strip() or "ODBC Driver 18 for SQL Server"
         parts = [f"DRIVER={self._odbc_value(driver)}", f"SERVER={self._odbc_value(profile.host)}"]
         # Explicit credentials take precedence; otherwise local Windows trusted
@@ -81,12 +92,18 @@ class SQLServerConnector(DatabaseConnector):
 
         for key, value in options.items():
             if not re.fullmatch(r"[A-Za-z][A-Za-z0-9 _-]*", str(key)):
+                if self._connection_profile is not None:
+                    raise ConfigError("Unsupported SQL Server connection option")
                 raise ConfigError(f"Invalid ODBC connection option name: {key!r}.")
             rendered_value = "yes" if value is True else "no" if value is False else value
             parts.append(f"{key}={self._odbc_value(rendered_value)}")
         return ";".join(parts) + ";"
 
-    def _build_connection_string(self, profile: ConnectionConfig, database: str) -> str:
+    def _build_connection_string(
+        self,
+        profile: ConnectionConfig | ConnectionProfile,
+        database: str,
+    ) -> str:
         """Compose the complete ODBC connection string for one database."""
         return self._connection_options(profile) + f"DATABASE={self._odbc_value(database)};"
 
@@ -124,15 +141,18 @@ class SQLServerConnector(DatabaseConnector):
         conn_str = self._build_connection_string(profile, normalized_database)
         command_timeout = timeout_seconds if timeout_seconds is not None else profile.timeout_seconds
 
-        logger.info(
-            "Connecting to database.",
-            extra={
-                "tool": "connector.connect",
-                "db_type": profile.db_type,
-                "database": normalized_database,
-                "execution_time_ms": None,
-            },
-        )
+        if self._connection_profile is not None:
+            logger.info("Connecting with SQL Server profile-bound connector")
+        else:
+            logger.info(
+                "Connecting to database.",
+                extra={
+                    "tool": "connector.connect",
+                    "db_type": profile.db_type,
+                    "database": normalized_database,
+                    "execution_time_ms": None,
+                },
+            )
 
         driver = self._driver()
         try:
@@ -140,26 +160,32 @@ class SQLServerConnector(DatabaseConnector):
             connection.autocommit = True
             # pyodbc's connection timeout controls subsequent statement execution.
             connection.timeout = command_timeout
-            logger.info(
-                "Connection established successfully.",
-                extra={
-                    "tool": "connector.connect",
-                    "db_type": profile.db_type,
-                    "database": normalized_database,
-                    "success": True,
-                },
-            )
+            if self._connection_profile is not None:
+                logger.info("SQL Server profile-bound connection established")
+            else:
+                logger.info(
+                    "Connection established successfully.",
+                    extra={
+                        "tool": "connector.connect",
+                        "db_type": profile.db_type,
+                        "database": normalized_database,
+                        "success": True,
+                    },
+                )
             return connection
         except driver.Error:
-            logger.exception(
-                "Connection failed.",
-                extra={
-                    "tool": "connector.connect",
-                    "db_type": profile.db_type,
-                    "database": normalized_database,
-                    "success": False,
-                },
-            )
+            if self._connection_profile is not None:
+                logger.error("SQL Server profile-bound connection failed")
+            else:
+                logger.exception(
+                    "Connection failed.",
+                    extra={
+                        "tool": "connector.connect",
+                        "db_type": profile.db_type,
+                        "database": normalized_database,
+                        "success": False,
+                    },
+                )
             raise
 
     @contextlib.contextmanager

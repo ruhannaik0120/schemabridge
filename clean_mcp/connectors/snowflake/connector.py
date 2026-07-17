@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import contextlib
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from config import Config, ConfigError, ConnectionConfig
 from connectors.base import DatabaseConnector, unique_column_names
 
+if TYPE_CHECKING:
+    from models.connection_profile import ConnectionProfile
+
 
 class SnowflakeConnector(DatabaseConnector):
     """Connector implementation for Snowflake via snowflake-connector-python."""
+
+    profile_db_type = "snowflake"
 
     def _driver(self):
         """Load the optional Snowflake driver only when selected."""
@@ -23,9 +28,11 @@ class SnowflakeConnector(DatabaseConnector):
             raise ConfigError("Install snowflake-connector-python to use the Snowflake connector.") from exc
         return snowflake.connector
 
-    def _profile(self) -> ConnectionConfig:
+    def _profile(self) -> ConnectionConfig | ConnectionProfile:
         """Return the active profile after checking cloud account requirements."""
-        profile = Config.connection_config()
+        profile = self._connection_profile
+        if profile is None:
+            profile = Config.connection_config()
         if not profile.host:
             raise ConfigError("DB_HOST is required for the Snowflake connector and should contain the account identifier.")
         if not profile.username:
@@ -36,9 +43,17 @@ class SnowflakeConnector(DatabaseConnector):
         """Select an explicit database or the configured Snowflake default."""
         return (database or fallback or "").strip()
 
-    def _connection_kwargs(self, profile: ConnectionConfig, database: str | None = None) -> dict[str, Any]:
+    def _connection_kwargs(
+        self,
+        profile: ConnectionConfig | ConnectionProfile,
+        database: str | None = None,
+    ) -> dict[str, Any]:
         """Translate neutral settings into Snowflake account/session arguments."""
-        options = dict(profile.connection_options or {})
+        options = (
+            profile.connection_options_copy()
+            if self._connection_profile is not None
+            else dict(profile.connection_options or {})
+        )
         schema = options.pop("schema", None)
         kwargs: dict[str, Any] = {
             "account": profile.host,

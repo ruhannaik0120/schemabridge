@@ -4,14 +4,18 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import os
+from threading import Lock
 from time import perf_counter
 from uuid import uuid4
 
 from config import Config, ConfigError
+from connectors.base import DatabaseConnector
 from connectors.factory import ConnectorFactory
 from logger import logger, reset_environment, reset_request_id, set_environment, set_request_id
+from models.connection_profile import ConnectionProfile
 from models.errors import ErrorCode, StructuredError
 from models.responses import ToolResponse
+from services.profile_registry import ProfileRegistry
 from services.runtime_state import runtime_lock, runtime_metadata
 from validation.sql_guard import validate_query
 
@@ -19,14 +23,87 @@ from validation.sql_guard import validate_query
 class QueryService:
     """Service layer that orchestrates tool requests and formats responses."""
 
-    def __init__(self, sql_connector=None):
+    def __init__(self, sql_connector=None, *, profile: ConnectionProfile | None = None):
         """Create the service with a selected connector or an injected test double."""
 
+        if profile is not None and not isinstance(profile, ConnectionProfile):
+            raise TypeError("profile must be a ConnectionProfile.")
+        if (
+            profile is not None
+            and isinstance(sql_connector, DatabaseConnector)
+            and not sql_connector.matches_profile(profile)
+        ):
+            raise ConfigError("Connector is not bound to the supplied connection profile")
+        self._connection_profile = profile
         if sql_connector is None:
-            Config.load()
-            self.connector = ConnectorFactory.create()
+            if profile is None:
+                Config.load()
+                self.connector = ConnectorFactory.create()
+            else:
+                self.connector = ConnectorFactory.create_for_profile(profile)
         else:
             self.connector = sql_connector
+
+    def _db_type(self) -> str:
+        """Return the profile dialect or the current legacy Config dialect."""
+
+        if self._connection_profile is not None:
+            return self._connection_profile.db_type
+        return Config.DB_TYPE
+
+    def _database(self) -> str:
+        """Return the profile database or the current legacy Config database."""
+
+        if self._connection_profile is not None:
+            return self._connection_profile.database
+        return Config.DATABASE
+
+    def _profile_id(self) -> str:
+        """Return the bound profile ID or the current legacy active profile."""
+
+        if self._connection_profile is not None:
+            return self._connection_profile.profile_id
+        return os.getenv("DB_ACTIVE_PROFILE", "default").strip() or "default"
+
+    def _timeout_ceiling(self) -> int:
+        """Return the request timeout ceiling for this service context."""
+
+        if self._connection_profile is not None:
+            return self._connection_profile.timeout_seconds
+        return Config.GLOBAL_TIMEOUT_SECONDS
+
+    def _row_limit_ceiling(self) -> int:
+        """Return the result-row ceiling for this service context."""
+
+        if self._connection_profile is not None:
+            return self._connection_profile.max_rows
+        return Config.GLOBAL_MAX_ROWS
+
+    def _environment_name(self) -> str:
+        """Return the safe display name for this service's database type."""
+
+        return (self._db_type() or "database").strip().upper() or "DATABASE"
+
+    def _safe_connection_details(self) -> dict[str, object]:
+        """Return credential-free connection context for health responses."""
+
+        if self._connection_profile is not None:
+            return self._connection_profile.to_safe_dict()
+        return Config.connection_config().safe_dict()
+
+    def _safe_diagnostics(self) -> dict[str, object]:
+        """Return credential-free diagnostics for this service context."""
+
+        if self._connection_profile is not None:
+            return self._connection_profile.to_safe_dict()
+        return Config.diagnostics()
+
+    def _safe_error_detail(self, error: Exception) -> str:
+        """Prevent raw profile-bound connector errors from leaving the service."""
+
+        if self._connection_profile is not None:
+            return "Database operation failed for the selected connection profile."
+        return Config.redact_text(error)
 
     def _request_id(self) -> str:
         """Generate the short correlation ID shared by responses and logs."""
@@ -38,13 +115,14 @@ class QueryService:
 
         if timeout_seconds is not None and timeout_seconds <= 0:
             raise ConfigError("timeout_seconds must be greater than zero.")
-        return min(timeout_seconds or Config.GLOBAL_TIMEOUT_SECONDS, Config.GLOBAL_TIMEOUT_SECONDS)
+        ceiling = self._timeout_ceiling()
+        return min(timeout_seconds or ceiling, ceiling)
 
     def _execution_database(self, database: str | None) -> str:
         """Keep query execution bound to the database in the approved profile."""
 
         requested = (database or "").strip()
-        configured = (Config.DATABASE or "").strip()
+        configured = (self._database() or "").strip()
         if requested and configured and requested.casefold() != configured.casefold():
             raise ConfigError(
                 "Query execution database must match the active profile. "
@@ -59,7 +137,7 @@ class QueryService:
         # every log emitted while this tool call is being processed.
         request_id = self._request_id()
         request_token = set_request_id(request_id)
-        environment_name = (Config.DB_TYPE or "database").strip().upper() or "DATABASE"
+        environment_name = self._environment_name()
         environment_token = set_environment(environment_name)
         start_time = perf_counter()
         logger.info(
@@ -67,7 +145,7 @@ class QueryService:
             extra={
                 "tool": tool,
                 "environment": environment_name,
-                "db_type": Config.DB_TYPE,
+                "db_type": self._db_type(),
                 "success": None,
                 "execution_time_ms": 0,
                 "event": "request_received",
@@ -93,8 +171,8 @@ class QueryService:
         # returns the same contract regardless of the selected connector.
         execution_time_ms = int((perf_counter() - start_time) * 1000)
         response_metadata = {
-            "profile": os.getenv("DB_ACTIVE_PROFILE", "default").strip() or "default",
-            "db_type": Config.DB_TYPE,
+            "profile": self._profile_id(),
+            "db_type": self._db_type(),
             **runtime_metadata(),
             **(metadata or {}),
         }
@@ -158,7 +236,7 @@ class QueryService:
             extra={
                 "tool": tool,
                 "environment": environment,
-                "db_type": Config.DB_TYPE,
+                "db_type": self._db_type(),
                 "success": success,
                 "execution_time_ms": response.execution_time_ms,
                 "event": "request_completed",
@@ -209,7 +287,7 @@ class QueryService:
             message=message,
             request_id=request_id,
             start_time=start_time,
-            detail=Config.redact_text(error),
+            detail=self._safe_error_detail(error),
             hint=hint,
             retryable=retryable,
             data=data,
@@ -226,32 +304,32 @@ class QueryService:
         request_id, request_token, environment_token, start_time, requested_environment = self._begin_request("test_connection")
         try:
             snapshot = self.connector.test_connection(
-                database=database or Config.DATABASE,
+                database=database or self._database(),
                 timeout_seconds=self._effective_timeout(timeout_seconds),
             )
             response = self._response(
                 tool="test_connection",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 success=True,
                 request_id=request_id,
                 start_time=start_time,
                 data={
-                    "current_environment": Config.DB_TYPE.upper(),
-                    "database": database or Config.DATABASE,
+                    "current_environment": self._environment_name(),
+                    "database": database or self._database(),
                     "connection_status": snapshot.get("connection_status", "connected"),
                     "server_information": snapshot.get("server_information", snapshot),
                 },
                 metadata={
-                    "db_type": Config.DB_TYPE,
+                    "db_type": self._db_type(),
                     "connector_type": snapshot.get("connector_type", self.connector.__class__.__name__),
                 },
             )
             return self._finalize_request(
                 response,
                 tool="test_connection",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 request_id=request_id,
-                database=database or Config.DATABASE,
+                database=database or self._database(),
                 schema="",
                 query="",
             )
@@ -271,7 +349,7 @@ class QueryService:
                 tool="test_connection",
                 environment=requested_environment,
                 request_id=request_id,
-                database=database or Config.DATABASE,
+                database=database or self._database(),
                 schema="",
                 query="",
             )
@@ -289,32 +367,32 @@ class QueryService:
         request_id, request_token, environment_token, start_time, requested_environment = self._begin_request("health")
         try:
             snapshot = self.connector.health_check(
-                database=Config.DATABASE,
+                database=self._database(),
                 timeout_seconds=self._effective_timeout(timeout_seconds),
             )
             response = self._response(
                 tool="health",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 success=True,
                 request_id=request_id,
                 start_time=start_time,
                 data={
-                    "current_environment": Config.DB_TYPE.upper(),
+                    "current_environment": self._environment_name(),
                     "connection_status": snapshot.get("connection_status", "connected"),
                     "server_information": snapshot.get("server_information", snapshot),
-                    "environment_details": Config.connection_config().safe_dict(),
+                    "environment_details": self._safe_connection_details(),
                 },
                 metadata={
-                    "db_type": Config.DB_TYPE,
+                    "db_type": self._db_type(),
                     "connector_type": snapshot.get("connector_type", self.connector.__class__.__name__),
                 },
             )
             return self._finalize_request(
                 response,
                 tool="health",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 request_id=request_id,
-                database=Config.DATABASE,
+                database=self._database(),
                 schema="",
                 query="",
             )
@@ -338,7 +416,7 @@ class QueryService:
                 tool="health",
                 environment=requested_environment,
                 request_id=request_id,
-                database=Config.DATABASE,
+                database=self._database(),
                 schema="",
                 query="",
             )
@@ -358,23 +436,23 @@ class QueryService:
             payload = self.connector.list_databases(timeout_seconds=self._effective_timeout(timeout_seconds))
             response = self._response(
                 tool="list_databases",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 success=True,
                 request_id=request_id,
                 start_time=start_time,
                 data={
-                    "current_environment": Config.DB_TYPE.upper(),
+                    "current_environment": self._environment_name(),
                     "count": payload.get("count", len(payload.get("databases", []))),
                     "databases": payload.get("databases", []),
                 },
-                metadata={"db_type": Config.DB_TYPE},
+                metadata={"db_type": self._db_type()},
             )
             return self._finalize_request(
                 response,
                 tool="list_databases",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 request_id=request_id,
-                database=Config.DATABASE,
+                database=self._database(),
                 schema="",
                 query="",
             )
@@ -392,7 +470,7 @@ class QueryService:
                 tool="list_databases",
                 environment=requested_environment,
                 request_id=request_id,
-                database=Config.DATABASE,
+                database=self._database(),
                 schema="",
                 query="",
             )
@@ -411,7 +489,7 @@ class QueryService:
 
         request_id, request_token, environment_token, start_time, requested_environment = self._begin_request("list_tables")
         try:
-            target_database = database or Config.DATABASE
+            target_database = database or self._database()
             payload = self.connector.list_tables(
                 database=target_database,
                 schema=schema,
@@ -419,23 +497,23 @@ class QueryService:
             )
             response = self._response(
                 tool="list_tables",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 success=True,
                 request_id=request_id,
                 start_time=start_time,
                 data={
-                    "current_environment": Config.DB_TYPE.upper(),
+                    "current_environment": self._environment_name(),
                     "database": target_database,
                     "schema": schema or "",
                     "count": payload.get("count", len(payload.get("tables", []))),
                     "tables": payload.get("tables", []),
                 },
-                metadata={"db_type": Config.DB_TYPE},
+                metadata={"db_type": self._db_type()},
             )
             return self._finalize_request(
                 response,
                 tool="list_tables",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 request_id=request_id,
                 database=target_database,
                 schema=schema or "",
@@ -455,7 +533,7 @@ class QueryService:
                 tool="list_tables",
                 environment=requested_environment,
                 request_id=request_id,
-                database=database or Config.DATABASE,
+                database=database or self._database(),
                 schema=schema or "",
                 query="",
             )
@@ -476,7 +554,7 @@ class QueryService:
         request_id, request_token, environment_token, start_time, requested_environment = self._begin_request("describe_table")
         try:
             payload = self.connector.describe_table(
-                database=database or Config.DATABASE,
+                database=database or self._database(),
                 table=table,
                 schema=schema,
                 timeout_seconds=self._effective_timeout(timeout_seconds),
@@ -485,15 +563,15 @@ class QueryService:
             if not payload.get("columns"):
                 response = self._error(
                     tool="describe_table",
-                    environment=Config.DB_TYPE.upper(),
+                    environment=self._environment_name(),
                     code=ErrorCode.VALIDATION_FAILED,
-                    message=f"Table {table!r} was not found in {payload.get('database', database or Config.DATABASE)!r}.",
+                    message=f"Table {table!r} was not found in {payload.get('database', database or self._database())!r}.",
                     request_id=request_id,
                     start_time=start_time,
                     retryable=False,
                     data={
-                        "current_environment": Config.DB_TYPE.upper(),
-                        "database": payload.get("database", database or Config.DATABASE),
+                        "current_environment": self._environment_name(),
+                        "database": payload.get("database", database or self._database()),
                         "schema": payload.get("schema", schema or ""),
                         "table": table or "",
                         "column_count": 0,
@@ -503,35 +581,35 @@ class QueryService:
                 return self._finalize_request(
                     response,
                     tool="describe_table",
-                    environment=Config.DB_TYPE.upper(),
+                    environment=self._environment_name(),
                     request_id=request_id,
-                    database=payload.get("database", database or Config.DATABASE),
+                    database=payload.get("database", database or self._database()),
                     schema=payload.get("schema", schema or ""),
                     query="",
                 )
 
             response = self._response(
                 tool="describe_table",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 success=True,
                 request_id=request_id,
                 start_time=start_time,
                 data={
-                    "current_environment": Config.DB_TYPE.upper(),
-                    "database": payload.get("database", database or Config.DATABASE),
+                    "current_environment": self._environment_name(),
+                    "database": payload.get("database", database or self._database()),
                     "schema": payload.get("schema", schema or ""),
                     "table": payload.get("table", table or ""),
                     "column_count": payload.get("column_count", len(payload.get("columns", []))),
                     "columns": payload.get("columns", []),
                 },
-                metadata={"db_type": Config.DB_TYPE},
+                metadata={"db_type": self._db_type()},
             )
             return self._finalize_request(
                 response,
                 tool="describe_table",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 request_id=request_id,
-                database=payload.get("database", database or Config.DATABASE),
+                database=payload.get("database", database or self._database()),
                 schema=payload.get("schema", schema or ""),
                 query="",
             )
@@ -549,7 +627,7 @@ class QueryService:
                 tool="describe_table",
                 environment=requested_environment,
                 request_id=request_id,
-                database=database or Config.DATABASE,
+                database=database or self._database(),
                 schema=schema or "",
                 query="",
             )
@@ -600,7 +678,7 @@ class QueryService:
             if not columns:
                 response = self._error(
                     tool="suggest_columns",
-                    environment=Config.DB_TYPE.upper(),
+                    environment=self._environment_name(),
                     code=ErrorCode.VALIDATION_FAILED,
                     message=f"Table {normalized_table!r} was not found or has no visible columns.",
                     request_id=request_id,
@@ -611,7 +689,7 @@ class QueryService:
                 return self._finalize_request(
                     response,
                     tool="suggest_columns",
-                    environment=Config.DB_TYPE.upper(),
+                    environment=self._environment_name(),
                     request_id=request_id,
                     database=target_database,
                     schema=schema or "",
@@ -643,7 +721,7 @@ class QueryService:
             suggestions = [item for item in ranked if float(item["similarity"]) >= 0.25][:limit]
             response = self._response(
                 tool="suggest_columns",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 success=True,
                 request_id=request_id,
                 start_time=start_time,
@@ -657,12 +735,12 @@ class QueryService:
                     "sql_executed": False,
                     "approval_required_before_revised_sql": True,
                 },
-                metadata={"db_type": Config.DB_TYPE},
+                metadata={"db_type": self._db_type()},
             )
             return self._finalize_request(
                 response,
                 tool="suggest_columns",
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 request_id=request_id,
                 database=target_database,
                 schema=payload.get("schema", schema or ""),
@@ -682,7 +760,7 @@ class QueryService:
                 tool="suggest_columns",
                 environment=requested_environment,
                 request_id=request_id,
-                database=database or Config.DATABASE,
+                database=database or self._database(),
                 schema=schema or "",
             )
         finally:
@@ -712,22 +790,22 @@ class QueryService:
             if max_rows is not None and max_rows <= 0:
                 raise ConfigError("max_rows must be greater than zero.")
             # Per-request limits may reduce, but never raise, the configured cap.
-            row_limit = min(max_rows or Config.GLOBAL_MAX_ROWS, Config.GLOBAL_MAX_ROWS)
+            row_limit = min(max_rows or self._row_limit_ceiling(), self._row_limit_ceiling())
             # The calling client owns command authorization. MCP still enforces
             # one structurally unambiguous statement per call.
-            valid, reason = validate_query(statement, Config.DB_TYPE)
+            valid, reason = validate_query(statement, self._db_type())
             if not valid:
                 response = self._error(
                     tool=_tool_name,
-                    environment=Config.DB_TYPE.upper(),
+                    environment=self._environment_name(),
                     code=ErrorCode.QUERY_BLOCKED,
                     message=reason,
                     request_id=request_id,
                     start_time=start_time,
                     retryable=False,
                     data={
-                        "current_environment": Config.DB_TYPE.upper(),
-                        "database": database or Config.DATABASE,
+                        "current_environment": self._environment_name(),
+                        "database": database or self._database(),
                         "schema": schema or "",
                         "query": statement,
                         "row_count": 0,
@@ -737,9 +815,9 @@ class QueryService:
                 return self._finalize_request(
                     response,
                     tool=_tool_name,
-                    environment=Config.DB_TYPE.upper(),
+                    environment=self._environment_name(),
                     request_id=request_id,
-                    database=database or Config.DATABASE,
+                    database=database or self._database(),
                     schema=schema or "",
                     query=statement,
                 )
@@ -757,12 +835,12 @@ class QueryService:
             rows = payload.get("rows", [])
             response = self._response(
                 tool=_tool_name,
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 success=True,
                 request_id=request_id,
                 start_time=start_time,
                 data={
-                    "current_environment": Config.DB_TYPE.upper(),
+                    "current_environment": self._environment_name(),
                     "database": target_database,
                     "schema": schema or "",
                     "query": statement,
@@ -773,14 +851,14 @@ class QueryService:
                     "rows": rows,
                 },
                 metadata={
-                    "db_type": Config.DB_TYPE,
+                    "db_type": self._db_type(),
                     "row_limit": row_limit,
                 },
             )
             return self._finalize_request(
                 response,
                 tool=_tool_name,
-                environment=Config.DB_TYPE.upper(),
+                environment=self._environment_name(),
                 request_id=request_id,
                 database=target_database,
                 schema=schema or "",
@@ -794,7 +872,7 @@ class QueryService:
                 start_time=start_time,
                 error=exc,
                 data={
-                    "database": database or Config.DATABASE,
+                    "database": database or self._database(),
                     "schema": schema or "",
                     "query": statement,
                     "row_count": 0,
@@ -807,7 +885,7 @@ class QueryService:
                 tool=_tool_name,
                 environment=requested_environment,
                 request_id=request_id,
-                database=database or Config.DATABASE,
+                database=database or self._database(),
                 schema=schema or "",
                 query=statement,
             )
@@ -827,22 +905,22 @@ class QueryService:
         try:
             response = self._response(
                 tool="config_diagnostics",
-                environment=Config.DB_TYPE.upper() if Config.DB_TYPE else "UNCONFIGURED",
+                environment=self._environment_name() if self._db_type() else "UNCONFIGURED",
                 success=True,
                 request_id=request_id,
                 start_time=start_time,
                 data={
-                    "current_environment": Config.DB_TYPE.upper() if Config.DB_TYPE else "UNCONFIGURED",
-                    "configuration": Config.diagnostics(),
+                    "current_environment": self._environment_name() if self._db_type() else "UNCONFIGURED",
+                    "configuration": self._safe_diagnostics(),
                 },
-                metadata={"db_type": Config.DB_TYPE},
+                metadata={"db_type": self._db_type()},
             )
             return self._finalize_request(
                 response,
                 tool="config_diagnostics",
-                environment=Config.DB_TYPE.upper() if Config.DB_TYPE else "UNCONFIGURED",
+                environment=self._environment_name() if self._db_type() else "UNCONFIGURED",
                 request_id=request_id,
-                database=Config.DATABASE,
+                database=self._database(),
                 schema="",
                 query="",
             )
@@ -860,7 +938,7 @@ class QueryService:
                 tool="config_diagnostics",
                 environment=requested_environment,
                 request_id=request_id,
-                database=Config.DATABASE,
+                database=self._database(),
                 schema="",
                 query="",
             )
@@ -870,12 +948,50 @@ class QueryService:
 
 
 _QUERY_SERVICE: QueryService | None = None
+_PROFILE_REGISTRY: ProfileRegistry | None = None
+_PROFILE_QUERY_SERVICES: dict[str, QueryService] = {}
+_PROFILE_QUERY_SERVICE_LOCK = Lock()
 
 
-def get_query_service() -> QueryService:
-    """Return the process-wide service used by stateless MCP tool wrappers."""
+def _load_profile_registry() -> ProfileRegistry:
+    """Load one immutable snapshot of the existing named-profile document."""
 
-    global _QUERY_SERVICE
+    return ProfileRegistry.from_json(os.getenv("DB_PROFILES_JSON", ""))
+
+
+def _close_profile_query_services(services: list[QueryService]) -> None:
+    """Close detached named services without exposing connector failures."""
+
+    for service in services:
+        try:
+            service.connector.close()
+        except Exception:
+            logger.error("Failed to close a cached profile-bound query service")
+
+
+def get_query_service(profile_id: str | None = None) -> QueryService:
+    """Return the legacy singleton or a named, profile-bound cached service."""
+
+    global _PROFILE_REGISTRY, _QUERY_SERVICE
+    if profile_id is not None:
+        with _PROFILE_QUERY_SERVICE_LOCK:
+            registry = _PROFILE_REGISTRY
+            if registry is None:
+                registry = _load_profile_registry()
+                _PROFILE_REGISTRY = registry
+
+            profile = registry.resolve(profile_id)
+            cache_key = profile.normalized_profile_id
+            service = _PROFILE_QUERY_SERVICES.get(cache_key)
+            if service is None:
+                try:
+                    service = QueryService(profile=profile)
+                except Exception:
+                    logger.error("Failed to create a cached profile-bound query service")
+                    raise ConfigError("Unable to create a service for the selected connection profile") from None
+                _PROFILE_QUERY_SERVICES[cache_key] = service
+            return service
+
     with runtime_lock:
         # The service is reused during normal operation and explicitly discarded
         # by profile switching when a different connector is required.
@@ -892,3 +1008,31 @@ def reset_query_service() -> None:
         if _QUERY_SERVICE is not None:
             _QUERY_SERVICE.connector.close()
         _QUERY_SERVICE = None
+
+
+def reset_profile_query_services(profile_id: str | None = None) -> None:
+    """Detach and close named services as an explicit lifecycle operation.
+
+    Reset is not intended to close a service safely while that same service has
+    an in-flight database operation. Reference counting is intentionally out of
+    scope for this cache foundation.
+    """
+
+    global _PROFILE_REGISTRY
+    detached: list[QueryService] = []
+    with _PROFILE_QUERY_SERVICE_LOCK:
+        if profile_id is None:
+            detached = list(_PROFILE_QUERY_SERVICES.values())
+            _PROFILE_QUERY_SERVICES.clear()
+            _PROFILE_REGISTRY = None
+        else:
+            registry = _PROFILE_REGISTRY
+            if registry is None:
+                registry = _load_profile_registry()
+                _PROFILE_REGISTRY = registry
+            profile = registry.resolve(profile_id)
+            service = _PROFILE_QUERY_SERVICES.pop(profile.normalized_profile_id, None)
+            if service is not None:
+                detached.append(service)
+
+    _close_profile_query_services(detached)
