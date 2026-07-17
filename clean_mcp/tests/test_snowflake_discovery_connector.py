@@ -21,7 +21,7 @@ from connectors.discovery import (
 from connectors.snowflake import _discovery_queries as queries
 from connectors.snowflake.connector import SnowflakeConnector
 from models.connection_profile import ConnectionProfile
-from models.discovery import DatabaseObjectType, ObjectPersistence
+from models.discovery import CoverageStatus, DatabaseObjectType, ObjectPersistence
 
 
 def _profile(
@@ -29,6 +29,7 @@ def _profile(
     *,
     profile_id: str = "snowflake-discovery",
     password: str = "credential-marker",
+    connection_options: dict[str, Any] | None = None,
 ) -> ConnectionProfile:
     return ConnectionProfile(
         profile_id=profile_id,
@@ -37,7 +38,11 @@ def _profile(
         database=database,
         username="app",
         password=password,
-        connection_options={"warehouse": "DISCOVERY_WH", "role": "DISCOVERY_ROLE"},
+        connection_options=(
+            {"warehouse": "DISCOVERY_WH", "role": "DISCOVERY_ROLE"}
+            if connection_options is None
+            else connection_options
+        ),
         timeout_seconds=17,
     )
 
@@ -73,8 +78,15 @@ class FakeCursor:
     ) -> None:
         bound = () if parameters is None else parameters
         self.connection.executions.append((query, bound, timeout))
+        if self.connection.transaction_poisoned:
+            raise DriverFailure("poisoned transaction", sqlstate="25000")
         response = self.connection.response_for(query, bound)
         if isinstance(response, BaseException):
+            if (
+                getattr(response, "sqlstate", None) == "42501"
+                and self.connection.autocommit is False
+            ):
+                self.connection.transaction_poisoned = True
             raise response
         rows = list(response)
         columns = list(rows[0]) if rows else []
@@ -104,6 +116,8 @@ class FakeConnection:
         self.commit_count = 0
         self.rollback_count = 0
         self.closed = False
+        self.autocommit: bool | None = None
+        self.transaction_poisoned = False
 
     def response_for(self, query: str, parameters: tuple[Any, ...]) -> Any:
         default = (
@@ -144,6 +158,7 @@ class FakeDriver:
         self.connect_kwargs.append(dict(kwargs))
         if self.error is not None:
             raise self.error
+        self.connection.autocommit = kwargs.get("autocommit")
         return self.connection
 
 
@@ -200,15 +215,113 @@ def _object_row(**overrides: Any) -> dict[str, Any]:
     return row
 
 
-def test_stage_3a_signatures_are_exact_and_full_protocol_conformance_is_deferred():
+def _table_metadata_row(**overrides: Any) -> dict[str, Any]:
+    row = _object_row(
+        is_immutable=False,
+        clustering_expression=None,
+    )
+    row.update(overrides)
+    return row
+
+
+def _column_row(**overrides: Any) -> dict[str, Any]:
+    row = {
+        "column_name": "Order Id",
+        "ordinal_position": 1,
+        "data_type": "NUMBER",
+        "data_type_alias": "INT",
+        "is_nullable": "NO",
+        "character_maximum_length": None,
+        "numeric_precision": 38,
+        "numeric_scale": 0,
+        "datetime_precision": None,
+        "column_default": "1",
+        "column_comment": "identifier",
+        "collation_name": None,
+        "is_identity": True,
+        "identity_generation": "BY DEFAULT",
+        "identity_start": 1,
+        "identity_increment": 1,
+        "identity_cycle": False,
+        "identity_ordered": True,
+        "generation_expression": None,
+        "kind": "COLUMN",
+        "dtd_identifier": "DT1",
+    }
+    row.update(overrides)
+    return row
+
+
+def _key_constraint_row(**overrides: Any) -> dict[str, Any]:
+    row = {
+        "constraint_name": "Orders PK",
+        "constraint_type": "PRIMARY KEY",
+        "is_enforced": False,
+        "is_rely": True,
+        "is_deferrable": False,
+        "initially_deferred": False,
+        "comment": "key comment",
+    }
+    row.update(overrides)
+    return row
+
+
+def _foreign_key_row(**overrides: Any) -> dict[str, Any]:
+    row = {
+        "constraint_name": "Orders Customer FK",
+        "referenced_catalog": "App DB",
+        "referenced_schema": "Mixed Case",
+        "referenced_table": "Customers",
+        "match_option": "NONE",
+        "update_rule": "NO ACTION",
+        "delete_rule": "CASCADE",
+        "is_enforced": False,
+        "is_rely": True,
+        "is_deferrable": False,
+        "initially_deferred": False,
+        "comment": "fk comment",
+    }
+    row.update(overrides)
+    return row
+
+
+def _check_constraint_row(**overrides: Any) -> dict[str, Any]:
+    row = {
+        "constraint_catalog": "App DB",
+        "constraint_schema": "Mixed Case",
+        "constraint_table": "Orders",
+        "constraint_name": "Orders Amount Check",
+        "expression": '"amount" > 0',
+    }
+    row.update(overrides)
+    return row
+
+
+def _stage_3b_responses(**overrides: Any) -> dict[str, Any]:
+    responses: dict[str, Any] = {
+        queries._TABLE_METADATA_QUERY: [_table_metadata_row()],
+        queries._COLUMNS_QUERY: [_column_row()],
+        queries._KEY_CONSTRAINTS_QUERY: [],
+        queries._FOREIGN_KEYS_QUERY: [],
+        queries._CHECK_CONSTRAINTS_QUERY: [],
+    }
+    responses.update(overrides)
+    return responses
+
+
+def test_stage_3b_signatures_are_exact_and_protocol_conformance_is_complete():
     expected_schemas = ["self", "database", "timeout_seconds"]
     expected_objects = ["self", "database", "schema", "object_types", "timeout_seconds"]
+    expected_table = ["self", "database", "schema", "table", "timeout_seconds"]
     schemas_signature = inspect.signature(SnowflakeConnector.list_schemas)
     objects_signature = inspect.signature(SnowflakeConnector.list_objects)
+    table_signature = inspect.signature(SnowflakeConnector.get_table_metadata)
     assert schemas_signature == inspect.signature(SchemaDiscoveryConnector.list_schemas)
     assert objects_signature == inspect.signature(SchemaDiscoveryConnector.list_objects)
+    assert table_signature == inspect.signature(SchemaDiscoveryConnector.get_table_metadata)
     assert list(schemas_signature.parameters) == expected_schemas
     assert list(objects_signature.parameters) == expected_objects
+    assert list(table_signature.parameters) == expected_table
     assert all(
         parameter.kind is inspect.Parameter.KEYWORD_ONLY
         for name, parameter in schemas_signature.parameters.items()
@@ -219,11 +332,13 @@ def test_stage_3a_signatures_are_exact_and_full_protocol_conformance_is_deferred
         for name, parameter in objects_signature.parameters.items()
         if name != "self"
     )
+    assert all(
+        parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        for name, parameter in table_signature.parameters.items()
+        if name != "self"
+    )
     connector = SnowflakeConnector(profile=_profile())
-    # Stage 3B will add the real get_table_metadata operation and complete
-    # structural SchemaDiscoveryConnector conformance. Stage 3A has no stub.
-    assert not hasattr(connector, "get_table_metadata")
-    assert not isinstance(connector, SchemaDiscoveryConnector)
+    assert isinstance(connector, SchemaDiscoveryConnector)
 
 
 def test_profile_bound_discovery_never_reads_global_config(monkeypatch):
@@ -234,6 +349,86 @@ def test_profile_bound_discovery_never_reads_global_config(monkeypatch):
     )
     connection = FakeConnection({queries._SCHEMAS_QUERY: []})
     assert FakeSnowflakeConnector(connection).list_schemas() == ()
+
+
+@pytest.mark.parametrize("configured_autocommit", [False, True, None])
+def test_discovery_always_uses_autocommit_without_mutating_profile_options(
+    configured_autocommit,
+):
+    source_options: dict[str, Any] = {
+        "warehouse": "DISCOVERY_WH",
+        "session_parameters": {"QUERY_TAGS": ["canonical"]},
+    }
+    if configured_autocommit is not None:
+        source_options["autocommit"] = configured_autocommit
+    source_before = deepcopy(source_options)
+    profile = _profile(connection_options=source_options)
+    profile_before = profile.connection_options_copy()
+    connection = FakeConnection()
+    connector = FakeSnowflakeConnector(connection, profile=profile)
+
+    assert connector.list_schemas() == ()
+    assert connector.fake_driver.connect_kwargs[0]["autocommit"] is True
+    assert connection.autocommit is True
+    assert profile.connection_options_copy() == profile_before
+    assert source_options == source_before
+
+    connector.fake_driver.connect_kwargs[0]["session_parameters"]["QUERY_TAGS"].append(
+        "driver-copy"
+    )
+    assert profile.connection_options_copy() == profile_before
+    assert source_options == source_before
+
+
+def test_discovery_autocommit_prevents_permission_failure_from_poisoning_later_queries():
+    profile = _profile(
+        connection_options={
+            "warehouse": "DISCOVERY_WH",
+            "role": "DISCOVERY_ROLE",
+            "autocommit": False,
+        }
+    )
+    profile_before = profile.connection_options_copy()
+    responses = _stage_3b_responses(
+        **{
+            queries._COLUMNS_QUERY: DriverFailure("private", sqlstate="42501"),
+            queries._CHECK_CONSTRAINTS_QUERY: [_check_constraint_row()],
+        }
+    )
+    connection = FakeConnection(responses)
+    connector = FakeSnowflakeConnector(connection, profile=profile)
+
+    metadata = connector.get_table_metadata(schema="Mixed Case", table="Orders")
+
+    assert metadata is not None
+    assert metadata.coverage.columns is CoverageStatus.UNAVAILABLE
+    assert metadata.coverage.primary_key is CoverageStatus.COMPLETE
+    assert metadata.coverage.foreign_keys is CoverageStatus.COMPLETE
+    assert metadata.coverage.check_constraints is CoverageStatus.COMPLETE
+    assert metadata.check_constraints[0].name == "Orders Amount Check"
+    executed_queries = [item[0] for item in connection.executions]
+    assert executed_queries.index(queries._CHECK_CONSTRAINTS_QUERY) > executed_queries.index(
+        queries._COLUMNS_QUERY
+    )
+    assert connection.autocommit is True
+    assert connection.transaction_poisoned is False
+    assert profile.connection_options_copy() == profile_before
+    assert profile.connection_options["autocommit"] is False
+    assert connection.commit_count == connection.rollback_count == 0
+    assert connection.cursor_count == connection.closed_cursors
+    assert connection.closed
+
+
+def test_legacy_connect_preserves_configured_autocommit_behavior():
+    profile = _profile(connection_options={"autocommit": False})
+    connection = FakeConnection()
+    connector = FakeSnowflakeConnector(connection, profile=profile)
+
+    legacy_connection = connector.connect()
+
+    assert connector.fake_driver.connect_kwargs[0]["autocommit"] is False
+    assert legacy_connection.autocommit is False
+    legacy_connection.close()
 
 
 def test_independent_profiles_keep_exact_driver_settings():
@@ -251,6 +446,8 @@ def test_independent_profiles_keep_exact_driver_settings():
     assert second.list_schemas() == ()
     assert first.fake_driver.connect_kwargs[0]["database"] == "FIRST_DB"
     assert second.fake_driver.connect_kwargs[0]["database"] == "SECOND_DB"
+    assert first.fake_driver.connect_kwargs[0]["autocommit"] is True
+    assert second.fake_driver.connect_kwargs[0]["autocommit"] is True
 
 
 @pytest.mark.parametrize("explicit", [None, "App DB"])
@@ -558,6 +755,534 @@ def test_timeout_lifecycle_and_bound_parameters_use_one_connection_and_two_curso
     assert connection.commit_count == connection.rollback_count == 0
 
 
+def test_get_table_metadata_returns_sanitized_metadata_with_partial_constraint_headers():
+    column = _column_row(schema_evolution_record="query-id", masking_policy="secret")
+    responses = _stage_3b_responses(
+        **{
+            queries._COLUMNS_QUERY: [
+                _column_row(column_name="z", ordinal_position=2),
+                column,
+            ],
+            queries._KEY_CONSTRAINTS_QUERY: [
+                _key_constraint_row(),
+                _key_constraint_row(
+                    constraint_name="Orders Order Number Unique",
+                    constraint_type="UNIQUE",
+                    is_enforced=False,
+                    is_rely=False,
+                ),
+            ],
+            queries._FOREIGN_KEYS_QUERY: [_foreign_key_row()],
+            queries._CHECK_CONSTRAINTS_QUERY: [_check_constraint_row()],
+        }
+    )
+    connection = FakeConnection(responses)
+    metadata = FakeSnowflakeConnector(connection).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert metadata is not None
+    assert [column.column_name for column in metadata.columns] == ["Order Id", "z"]
+    first_column = metadata.columns[0]
+    assert first_column.ordinal_position == 1
+    assert first_column.numeric_precision == 38
+    assert first_column.is_identity is True
+    assert first_column.is_auto_increment is True
+    assert first_column.vendor_metadata == {
+        "data_type_alias": "INT",
+        "dtd_identifier": "DT1",
+        "identity_start": 1,
+        "identity_increment": 1,
+        "identity_cycle": False,
+        "identity_ordered": True,
+        "column_kind": "COLUMN",
+    }
+    assert "schema_evolution_record" not in first_column.vendor_metadata
+    assert "masking_policy" not in first_column.vendor_metadata
+    assert metadata.primary_key is not None
+    assert metadata.primary_key.columns == ()
+    assert metadata.primary_key.is_enforced is False
+    assert metadata.primary_key.is_rely is True
+    assert metadata.unique_constraints[0].columns == ()
+    assert metadata.foreign_keys[0].local_columns == ()
+    assert metadata.foreign_keys[0].referenced_columns == ()
+    assert metadata.foreign_keys[0].referenced_table == "Customers"
+    assert metadata.foreign_keys[0].update_rule == "NO ACTION"
+    assert metadata.foreign_keys[0].delete_rule == "CASCADE"
+    assert metadata.check_constraints[0].expression == '"amount" > 0'
+    assert metadata.check_constraints[0].is_enforced is None
+    assert metadata.check_constraints[0].is_validated is None
+    assert metadata.check_constraints[0].is_rely is None
+    assert metadata.coverage.columns is CoverageStatus.COMPLETE
+    assert metadata.coverage.primary_key is CoverageStatus.PARTIAL
+    assert metadata.coverage.unique_constraints is CoverageStatus.PARTIAL
+    assert metadata.coverage.foreign_keys is CoverageStatus.PARTIAL
+    assert metadata.coverage.check_constraints is CoverageStatus.COMPLETE
+    assert metadata.coverage.partitioning is CoverageStatus.NOT_APPLICABLE
+    assert metadata.coverage.clustering is CoverageStatus.COMPLETE
+    assert metadata.coverage.warnings == tuple(sorted(metadata.coverage.warnings))
+    assert "PRIMARY_KEY_MEMBERSHIP_UNAVAILABLE" in metadata.coverage.warnings
+    assert "UNIQUE_CONSTRAINT_MEMBERSHIP_UNAVAILABLE" in metadata.coverage.warnings
+    assert "FOREIGN_KEY_MEMBERSHIP_UNAVAILABLE" in metadata.coverage.warnings
+    assert connection.closed
+    assert connection.cursor_count == connection.closed_cursors == 6
+    assert connection.commit_count == connection.rollback_count == 0
+
+
+def test_get_table_metadata_returns_none_only_for_a_missing_base_object():
+    connection = FakeConnection({queries._TABLE_METADATA_QUERY: []})
+    metadata = FakeSnowflakeConnector(connection).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert metadata is None
+    assert connection.closed
+    assert connection.cursor_count == connection.closed_cursors == 2
+    assert connection.commit_count == connection.rollback_count == 0
+
+
+@pytest.mark.parametrize(
+    "base_rows",
+    [
+        [_table_metadata_row(), _table_metadata_row()],
+        [_table_metadata_row(object_name="other")],
+        [_table_metadata_row(table_type="EVENT TABLE")],
+    ],
+)
+def test_get_table_metadata_rejects_duplicate_malformed_and_unsupported_bases(base_rows):
+    connection = FakeConnection({queries._TABLE_METADATA_QUERY: base_rows})
+    with pytest.raises(SchemaDiscoveryError):
+        FakeSnowflakeConnector(connection).get_table_metadata(
+            schema="Mixed Case",
+            table="Orders",
+        )
+    assert connection.closed
+    assert connection.cursor_count == connection.closed_cursors == 2
+
+
+def test_get_table_metadata_preserves_exact_database_schema_and_table_as_parameters():
+    database = " Exact DB "
+    schema = " SELECT * FROM secrets;-- "
+    table = "Drop Table?"
+    response = _table_metadata_row(
+        catalog_name=database,
+        schema_name=schema,
+        object_name=table,
+    )
+    connection = FakeConnection(
+        _stage_3b_responses(**{queries._TABLE_METADATA_QUERY: [response]}),
+        current_database=database,
+    )
+    connector = FakeSnowflakeConnector(connection, profile=_profile(""))
+    connector.get_table_metadata(database=database, schema=schema, table=table)
+    base_execution = next(
+        item for item in connection.executions if item[0] == queries._TABLE_METADATA_QUERY
+    )
+    assert base_execution[1] == (database, schema, table)
+    assert schema not in base_execution[0]
+    assert table not in base_execution[0]
+    assert connector.fake_driver.connect_kwargs[0]["database"] == database
+
+
+@pytest.mark.parametrize(
+    ("row", "view_rows", "expected_type", "expected_key", "expected_view"),
+    [
+        (_table_metadata_row(), None, DatabaseObjectType.TABLE, CoverageStatus.COMPLETE, CoverageStatus.NOT_APPLICABLE),
+        (_table_metadata_row(table_type="VIEW", estimated_row_count=None), [{"view_definition": "SELECT 1", "is_secure": False}], DatabaseObjectType.VIEW, CoverageStatus.NOT_APPLICABLE, CoverageStatus.COMPLETE),
+        (_table_metadata_row(table_type="MATERIALIZED VIEW", estimated_row_count=2), None, DatabaseObjectType.MATERIALIZED_VIEW, CoverageStatus.NOT_APPLICABLE, CoverageStatus.UNAVAILABLE),
+        (_table_metadata_row(table_type="EXTERNAL TABLE"), None, DatabaseObjectType.EXTERNAL_TABLE, CoverageStatus.NOT_APPLICABLE, CoverageStatus.NOT_APPLICABLE),
+        (_table_metadata_row(is_dynamic=True), None, DatabaseObjectType.DYNAMIC_TABLE, CoverageStatus.UNAVAILABLE, CoverageStatus.NOT_APPLICABLE),
+    ],
+)
+def test_get_table_metadata_covers_each_supported_object_class(
+    row,
+    view_rows,
+    expected_type,
+    expected_key,
+    expected_view,
+):
+    responses = _stage_3b_responses(**{queries._TABLE_METADATA_QUERY: [row]})
+    if view_rows is not None:
+        responses[queries._VIEW_DEFINITION_QUERY] = view_rows
+    connection = FakeConnection(responses)
+    metadata = FakeSnowflakeConnector(connection).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert metadata is not None
+    assert metadata.object_type is expected_type
+    assert metadata.coverage.primary_key is expected_key
+    assert metadata.coverage.unique_constraints is expected_key
+    assert metadata.coverage.view_definition is expected_view
+    if expected_type is DatabaseObjectType.EXTERNAL_TABLE:
+        assert metadata.coverage.clustering is CoverageStatus.NOT_APPLICABLE
+    if expected_type is DatabaseObjectType.DYNAMIC_TABLE:
+        assert "DYNAMIC_TABLE_KEYS_UNAVAILABLE" in metadata.coverage.warnings
+        assert queries._KEY_CONSTRAINTS_QUERY not in [item[0] for item in connection.executions]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_vendor_value", "expected_coverage", "expected_warning"),
+    [
+        (True, True, CoverageStatus.COMPLETE, None),
+        (False, False, CoverageStatus.COMPLETE, None),
+        (None, None, CoverageStatus.UNAVAILABLE, "CLUSTERING_UNAVAILABLE"),
+        ("YES", None, CoverageStatus.PARTIAL, "CLUSTERING_PARTIAL"),
+    ],
+)
+def test_get_table_metadata_preserves_native_auto_clustering_boolean_coverage(
+    value,
+    expected_vendor_value,
+    expected_coverage,
+    expected_warning,
+):
+    responses = _stage_3b_responses(
+        **{
+            queries._TABLE_METADATA_QUERY: [
+                _table_metadata_row(auto_clustering_on=value)
+            ]
+        }
+    )
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert metadata is not None
+    assert metadata.vendor_metadata["auto_clustering_on"] is expected_vendor_value
+    assert metadata.coverage.clustering is expected_coverage
+    if expected_warning is None:
+        assert "CLUSTERING_UNAVAILABLE" not in metadata.coverage.warnings
+        assert "CLUSTERING_PARTIAL" not in metadata.coverage.warnings
+    else:
+        assert expected_warning in metadata.coverage.warnings
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("0", 0),
+        ("1", 1),
+        ("-1", -1),
+        ("+1", 1),
+        ("0001", 1),
+        (1, 1),
+        (Decimal("1"), 1),
+    ],
+)
+def test_discovery_integer_accepts_only_complete_integral_values(value, expected):
+    assert SnowflakeConnector._discovery_integer(value) == (expected, True)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        " ",
+        " 1",
+        "1 ",
+        "1.0",
+        "1e3",
+        "+-1",
+        "--1",
+        "1abc",
+        True,
+        1.0,
+        Decimal("1.5"),
+        Decimal("NaN"),
+        Decimal("Infinity"),
+    ],
+)
+def test_discovery_integer_rejects_noncanonical_or_fractional_values(value):
+    assert SnowflakeConnector._discovery_integer(value) == (None, False)
+
+
+def test_get_table_metadata_normalizes_identity_numeric_text_without_mutating_rows():
+    column_row = _column_row(
+        identity_start="-1",
+        identity_increment="+1",
+    )
+    before = deepcopy(column_row)
+    responses = _stage_3b_responses(**{queries._COLUMNS_QUERY: [column_row]})
+
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+
+    assert metadata is not None
+    assert metadata.coverage.columns is CoverageStatus.COMPLETE
+    assert metadata.columns[0].is_identity is True
+    assert metadata.columns[0].identity_generation == "BY DEFAULT"
+    assert metadata.columns[0].vendor_metadata["identity_start"] == -1
+    assert metadata.columns[0].vendor_metadata["identity_increment"] == 1
+    assert column_row == before
+
+
+@pytest.mark.parametrize("value", ["1.0", "1e3", " 1", True, Decimal("1.5")])
+def test_get_table_metadata_marks_malformed_identity_numeric_values_partial(value):
+    column_row = _column_row(identity_start=value)
+    responses = _stage_3b_responses(**{queries._COLUMNS_QUERY: [column_row]})
+
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+
+    assert metadata is not None
+    assert metadata.coverage.columns is CoverageStatus.PARTIAL
+    assert "identity_start" not in metadata.columns[0].vendor_metadata
+
+
+def test_non_identity_columns_ignore_identity_only_source_fields():
+    column_row = _column_row(
+        is_identity=False,
+        identity_generation="malformed but irrelevant",
+        identity_start="1.0",
+        identity_increment=True,
+        identity_cycle="YES",
+        identity_ordered="NO",
+    )
+    responses = _stage_3b_responses(**{queries._COLUMNS_QUERY: [column_row]})
+
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+
+    assert metadata is not None
+    column = metadata.columns[0]
+    assert metadata.coverage.columns is CoverageStatus.COMPLETE
+    assert column.is_identity is False
+    assert column.is_auto_increment is False
+    assert column.identity_generation is None
+    assert "identity_start" not in column.vendor_metadata
+    assert "identity_increment" not in column.vendor_metadata
+    assert "identity_cycle" not in column.vendor_metadata
+    assert "identity_ordered" not in column.vendor_metadata
+
+
+def test_get_table_metadata_converts_decimal_columns_and_enriches_only_structured_arrays():
+    array_column = _column_row(
+        column_name="nested",
+        ordinal_position=Decimal("2"),
+        data_type="ARRAY",
+        data_type_alias=None,
+        numeric_precision=Decimal("38"),
+        numeric_scale=Decimal("0"),
+        dtd_identifier="ARRAY_DTD",
+    )
+    response = _stage_3b_responses(
+        **{
+            queries._COLUMNS_QUERY: [array_column],
+            queries._ELEMENT_TYPES_QUERY: [
+                {
+                    "collection_type_identifier": "ARRAY_DTD",
+                    "data_type": "NUMBER",
+                    "dtd_identifier": None,
+                }
+            ],
+        }
+    )
+    metadata = FakeSnowflakeConnector(FakeConnection(response)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert metadata is not None
+    column = metadata.columns[0]
+    assert column.ordinal_position == 2
+    assert column.numeric_precision == 38
+    assert column.array_dimensions == 1
+    assert column.element_native_type == "NUMBER"
+
+
+def test_get_table_metadata_marks_malformed_or_unavailable_array_elements_partial():
+    array_column = _column_row(data_type="ARRAY", dtd_identifier="ARRAY_DTD")
+    malformed = _stage_3b_responses(
+        **{
+            queries._COLUMNS_QUERY: [array_column],
+            queries._ELEMENT_TYPES_QUERY: [
+                {
+                    "collection_type_identifier": "ARRAY_DTD",
+                    "data_type": None,
+                    "dtd_identifier": None,
+                }
+            ],
+        }
+    )
+    malformed_metadata = FakeSnowflakeConnector(FakeConnection(malformed)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert malformed_metadata is not None
+    assert malformed_metadata.coverage.columns is CoverageStatus.PARTIAL
+
+    unavailable = _stage_3b_responses(
+        **{
+            queries._COLUMNS_QUERY: [array_column],
+            queries._ELEMENT_TYPES_QUERY: DriverFailure("private", sqlstate="42501"),
+        }
+    )
+    unavailable_metadata = FakeSnowflakeConnector(FakeConnection(unavailable)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert unavailable_metadata is not None
+    assert unavailable_metadata.coverage.columns is CoverageStatus.PARTIAL
+    assert "STRUCTURED_ARRAY_TYPES_UNAVAILABLE" in unavailable_metadata.coverage.warnings
+
+
+def test_get_table_metadata_degrades_component_permissions_without_leaking_errors():
+    responses = _stage_3b_responses(
+        **{
+            queries._COLUMNS_QUERY: DriverFailure("secret identifiers", sqlstate="42501"),
+            queries._KEY_CONSTRAINTS_QUERY: DriverFailure("secret identifiers", sqlstate="42501"),
+            queries._FOREIGN_KEYS_QUERY: DriverFailure("secret identifiers", sqlstate="42501"),
+            queries._CHECK_CONSTRAINTS_QUERY: DriverFailure("secret identifiers", sqlstate="42501"),
+        }
+    )
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert metadata is not None
+    assert metadata.columns == ()
+    assert metadata.coverage.columns is CoverageStatus.UNAVAILABLE
+    assert metadata.coverage.primary_key is CoverageStatus.UNAVAILABLE
+    assert metadata.coverage.unique_constraints is CoverageStatus.UNAVAILABLE
+    assert metadata.coverage.foreign_keys is CoverageStatus.UNAVAILABLE
+    assert metadata.coverage.check_constraints is CoverageStatus.UNAVAILABLE
+    assert all("SECRET" not in warning for warning in metadata.coverage.warnings)
+
+
+def test_get_table_metadata_omits_foreign_keys_without_a_visible_target():
+    responses = _stage_3b_responses(
+        **{
+            queries._FOREIGN_KEYS_QUERY: [_foreign_key_row(referenced_table=None)],
+        }
+    )
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert metadata is not None
+    assert metadata.foreign_keys == ()
+    assert metadata.coverage.foreign_keys is CoverageStatus.PARTIAL
+    assert "FOREIGN_KEYS_PARTIAL" in metadata.coverage.warnings
+
+
+def test_get_table_metadata_orders_direct_check_constraints_without_invented_reliability():
+    responses = _stage_3b_responses(
+        **{
+            queries._CHECK_CONSTRAINTS_QUERY: [
+                _check_constraint_row(
+                    constraint_name="z_check",
+                    expression='"z" > 0',
+                ),
+                _check_constraint_row(
+                    constraint_name="a_check",
+                    expression='"a" > 0',
+                ),
+            ]
+        }
+    )
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert metadata is not None
+    assert [constraint.name for constraint in metadata.check_constraints] == [
+        "a_check",
+        "z_check",
+    ]
+    assert metadata.coverage.check_constraints is CoverageStatus.COMPLETE
+    assert all(constraint.is_enforced is None for constraint in metadata.check_constraints)
+    assert all(constraint.is_validated is None for constraint in metadata.check_constraints)
+    assert all(constraint.is_rely is None for constraint in metadata.check_constraints)
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [_check_constraint_row(expression=None)],
+        [_check_constraint_row(expression="")],
+        [_check_constraint_row(constraint_table="Other")],
+    ],
+)
+def test_get_table_metadata_marks_malformed_direct_check_rows_partial(rows):
+    responses = _stage_3b_responses(**{queries._CHECK_CONSTRAINTS_QUERY: rows})
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert metadata is not None
+    assert metadata.check_constraints == ()
+    assert metadata.coverage.check_constraints is CoverageStatus.PARTIAL
+    assert "CHECK_CONSTRAINTS_PARTIAL" in metadata.coverage.warnings
+
+
+def test_get_table_metadata_marks_successful_empty_checks_complete_for_tables():
+    metadata = FakeSnowflakeConnector(
+        FakeConnection(_stage_3b_responses())
+    ).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None
+    assert metadata.check_constraints == ()
+    assert metadata.coverage.check_constraints is CoverageStatus.COMPLETE
+
+
+@pytest.mark.parametrize(
+    ("query", "failure", "exception_type"),
+    [
+        (queries._TABLE_METADATA_QUERY, DriverFailure("secret", errno=604), SchemaDiscoveryTimeoutError),
+        (queries._COLUMNS_QUERY, DriverFailure("secret", sqlstate="57014"), SchemaDiscoveryTimeoutError),
+        (queries._KEY_CONSTRAINTS_QUERY, DriverFailure("secret", sqlstate="08006"), SchemaDiscoveryConnectionError),
+        (queries._CHECK_CONSTRAINTS_QUERY, DriverFailure("secret", sqlstate="XX000"), SchemaDiscoveryError),
+    ],
+)
+def test_get_table_metadata_translates_fatal_failures_and_closes_resources(
+    query,
+    failure,
+    exception_type,
+):
+    responses = _stage_3b_responses(**{query: failure})
+    connection = FakeConnection(responses)
+    with pytest.raises(exception_type) as captured:
+        FakeSnowflakeConnector(connection).get_table_metadata(
+            schema="Mixed Case",
+            table="Orders",
+        )
+    assert "secret" not in str(captured.value)
+    assert connection.closed
+    assert connection.cursor_count == connection.closed_cursors
+    assert connection.commit_count == connection.rollback_count == 0
+
+
+def test_get_table_metadata_is_deterministic_under_shuffled_catalog_rows():
+    first = _stage_3b_responses(
+        **{
+            queries._COLUMNS_QUERY: [
+                _column_row(column_name="b", ordinal_position=2),
+                _column_row(column_name="a", ordinal_position=1),
+            ],
+            queries._KEY_CONSTRAINTS_QUERY: [
+                _key_constraint_row(constraint_name="z", constraint_type="UNIQUE"),
+                _key_constraint_row(constraint_name="a", constraint_type="UNIQUE"),
+            ],
+        }
+    )
+    second = dict(first)
+    second[queries._COLUMNS_QUERY] = list(reversed(first[queries._COLUMNS_QUERY]))
+    second[queries._KEY_CONSTRAINTS_QUERY] = list(reversed(first[queries._KEY_CONSTRAINTS_QUERY]))
+    forward = FakeSnowflakeConnector(FakeConnection(first)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    reverse = FakeSnowflakeConnector(FakeConnection(second)).get_table_metadata(
+        schema="Mixed Case",
+        table="Orders",
+    )
+    assert forward == reverse
+
+
 def test_every_snowflake_discovery_query_is_one_fixed_read_only_select():
     query_constants = {
         name: value
@@ -568,10 +1293,18 @@ def test_every_snowflake_discovery_query_is_one_fixed_read_only_select():
         "_CURRENT_DATABASE_QUERY",
         "_SCHEMAS_QUERY",
         "_OBJECTS_QUERY",
+        "_TABLE_METADATA_QUERY",
+        "_COLUMNS_QUERY",
+        "_ELEMENT_TYPES_QUERY",
+        "_KEY_CONSTRAINTS_QUERY",
+        "_FOREIGN_KEYS_QUERY",
+        "_CHECK_CONSTRAINTS_QUERY",
+        "_VIEW_DEFINITION_QUERY",
     }
     forbidden = re.compile(
-        r"\b(USE|SHOW|RESULT_SCAN|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|"
-        r"TRUNCATE|GRANT|REVOKE|COPY|CALL|SET|BEGIN|COMMIT|ROLLBACK)\b",
+        r"\b(USE|SHOW|RESULT_SCAN|GET_DDL|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|"
+        r"DROP|TRUNCATE|GRANT|REVOKE|COPY|CALL|PUT|GET|REMOVE|SET|UNSET|BEGIN|"
+        r"COMMIT|ROLLBACK)\b",
         re.I,
     )
     for name, query in query_constants.items():
@@ -583,3 +1316,21 @@ def test_every_snowflake_discovery_query_is_one_fixed_read_only_select():
         assert "{" not in query and "}" not in query, name
     assert queries._SCHEMAS_QUERY.count("%s") == 1
     assert queries._OBJECTS_QUERY.count("%s") == 2
+    assert queries._TABLE_METADATA_QUERY.count("%s") == 3
+    assert queries._COLUMNS_QUERY.count("%s") == 3
+    assert queries._ELEMENT_TYPES_QUERY.count("%s") == 3
+    assert queries._KEY_CONSTRAINTS_QUERY.count("%s") == 3
+    assert queries._FOREIGN_KEYS_QUERY.count("%s") == 3
+    assert queries._CHECK_CONSTRAINTS_QUERY.count("%s") == 3
+    assert queries._VIEW_DEFINITION_QUERY.count("%s") == 3
+    assert 'AUTO_CLUSTERING_ON AS "auto_clustering_on"' in queries._TABLE_METADATA_QUERY
+    assert "AUTO_CLUSTERING_ON IN" not in queries._TABLE_METADATA_QUERY
+    assert (
+        "FROM INFORMATION_SCHEMA.CHECK_CONSTRAINTS"
+        in queries._CHECK_CONSTRAINTS_QUERY
+    )
+    assert "TABLE_CONSTRAINTS" not in queries._CHECK_CONSTRAINTS_QUERY
+    assert "CONSTRAINT_TYPE" not in queries._CHECK_CONSTRAINTS_QUERY
+    assert "CONSTRAINT_CATALOG = %s" in queries._CHECK_CONSTRAINTS_QUERY
+    assert "CONSTRAINT_SCHEMA = %s" in queries._CHECK_CONSTRAINTS_QUERY
+    assert "CONSTRAINT_TABLE = %s" in queries._CHECK_CONSTRAINTS_QUERY

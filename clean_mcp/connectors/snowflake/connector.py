@@ -6,6 +6,7 @@ import contextlib
 import re
 from collections.abc import Mapping
 from decimal import Decimal
+from numbers import Integral
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from config import Config, ConfigError, ConnectionConfig
@@ -17,9 +18,24 @@ from connectors.discovery import (
     SchemaDiscoveryTimeoutError,
 )
 from connectors.snowflake import _discovery_queries as discovery_queries
-from models.discovery import DatabaseObjectMetadata, DatabaseObjectType, SchemaMetadata
-from normalizers._discovery_common import deduplicate_models
-from normalizers.snowflake_discovery import normalize_snowflake_object, normalize_snowflake_schema
+from models.discovery import (
+    ConstraintType,
+    CoverageStatus,
+    DatabaseObjectMetadata,
+    DatabaseObjectType,
+    DiscoveryCoverage,
+    SchemaMetadata,
+    TableMetadata,
+)
+from normalizers._discovery_common import deduplicate_and_sort_columns, deduplicate_models
+from normalizers.snowflake import normalize_snowflake_column
+from normalizers.snowflake_discovery import (
+    normalize_snowflake_check_constraint,
+    normalize_snowflake_foreign_key,
+    normalize_snowflake_key_constraint,
+    normalize_snowflake_object,
+    normalize_snowflake_schema,
+)
 
 if TYPE_CHECKING:
     from models.connection_profile import ConnectionProfile
@@ -355,6 +371,7 @@ class SnowflakeConnector(DatabaseConnector):
         connection = None
         try:
             kwargs = self._connection_kwargs(profile, database)
+            kwargs["autocommit"] = True
             if timeout_seconds is not None:
                 kwargs["login_timeout"] = timeout_seconds
             connection = self._driver().connect(**kwargs)
@@ -513,6 +530,7 @@ class SnowflakeConnector(DatabaseConnector):
 
         is_iceberg = SnowflakeConnector._optional_discovery_bool(row.get("is_iceberg"))
         is_hybrid = SnowflakeConnector._optional_discovery_bool(row.get("is_hybrid"))
+        is_immutable = SnowflakeConnector._optional_discovery_bool(row.get("is_immutable"))
         auto_clustering_on = SnowflakeConnector._optional_discovery_bool(
             row.get("auto_clustering_on")
         )
@@ -535,6 +553,7 @@ class SnowflakeConnector(DatabaseConnector):
                 "is_external": object_type is DatabaseObjectType.EXTERNAL_TABLE,
                 "is_iceberg": is_iceberg,
                 "is_hybrid": is_hybrid,
+                "is_immutable": is_immutable,
                 "auto_clustering_on": auto_clustering_on,
                 "has_clustering_key": has_clustering_key,
             },
@@ -628,6 +647,768 @@ class SnowflakeConnector(DatabaseConnector):
             ),
         )
         return tuple(sorted(objects, key=lambda item: (item.object_type.value, item.object_name)))
+
+    @staticmethod
+    def _discovery_integer(
+        value: Any,
+        *,
+        minimum: int | None = None,
+    ) -> tuple[int | None, bool]:
+        """Return a safely converted integral catalog value and its validity."""
+        if value is None:
+            return None, True
+        if isinstance(value, bool):
+            return None, False
+        if isinstance(value, Integral):
+            result = int(value)
+        elif (
+            isinstance(value, Decimal)
+            and value.is_finite()
+            and value == value.to_integral_value()
+        ):
+            result = int(value)
+        elif isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value):
+            result = int(value)
+        else:
+            return None, False
+        if minimum is not None and result < minimum:
+            return None, False
+        return result, True
+
+    @staticmethod
+    def _safe_discovery_text(value: Any) -> tuple[str | None, bool]:
+        if value is None or isinstance(value, str):
+            return value, True
+        return None, False
+
+    @staticmethod
+    def _safe_discovery_bool(value: Any) -> tuple[bool | None, bool]:
+        if value is None or isinstance(value, bool):
+            return value, True
+        return None, False
+
+    @staticmethod
+    def _is_insufficient_privilege(error: BaseException) -> bool:
+        return getattr(error, "sqlstate", None) == "42501"
+
+    def _optional_discovery_query(
+        self,
+        connection: Any,
+        query: str,
+        parameters: tuple[Any, ...],
+        timeout_seconds: int,
+    ) -> tuple[dict[str, Any], ...] | None:
+        """Run an optional component query without surfacing privilege details."""
+        try:
+            return self._execute_discovery_query(
+                connection,
+                query,
+                parameters,
+                timeout_seconds,
+            )
+        except Exception as error:
+            if self._is_insufficient_privilege(error):
+                return None
+            self._raise_discovery_error(error)
+
+    def _safe_column_row(
+        self,
+        row: Mapping[str, Any],
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Keep only modeled, non-sensitive column facts from one source row."""
+        column_name = row.get("column_name")
+        native_type = row.get("data_type")
+        ordinal_position, ordinal_valid = self._discovery_integer(
+            row.get("ordinal_position"),
+            minimum=1,
+        )
+        if (
+            not isinstance(column_name, str)
+            or column_name == ""
+            or "\x00" in column_name
+            or not isinstance(native_type, str)
+            or native_type == ""
+            or ordinal_position is None
+            or not ordinal_valid
+        ):
+            return None, True
+
+        malformed = False
+        cleaned: dict[str, Any] = {
+            "column_name": column_name,
+            "ordinal_position": ordinal_position,
+            "data_type": native_type,
+        }
+        vendor_metadata: dict[str, Any] = {}
+
+        nullable = row.get("is_nullable")
+        if nullable is None or isinstance(nullable, bool) or (
+            isinstance(nullable, str) and nullable.strip().upper() in {"YES", "NO"}
+        ):
+            cleaned["is_nullable"] = nullable
+        else:
+            malformed = True
+
+        for source_name, target_name, minimum in (
+            ("character_maximum_length", "character_maximum_length", 0),
+            ("numeric_precision", "numeric_precision", 0),
+            ("numeric_scale", "numeric_scale", 0),
+            ("datetime_precision", "datetime_precision", 0),
+        ):
+            value, valid = self._discovery_integer(row.get(source_name), minimum=minimum)
+            if valid:
+                cleaned[target_name] = value
+            else:
+                malformed = True
+
+        for source_name, target_name in (
+            ("column_default", "column_default"),
+            ("column_comment", "column_comment"),
+            ("collation_name", "collation_name"),
+            ("generation_expression", "generation_expression"),
+            ("kind", "kind"),
+        ):
+            value, valid = self._safe_discovery_text(row.get(source_name))
+            if valid:
+                cleaned[target_name] = value
+            else:
+                malformed = True
+
+        identity, identity_valid = self._safe_discovery_bool(row.get("is_identity"))
+        if identity_valid:
+            cleaned["is_identity"] = identity
+            cleaned["is_auto_increment"] = identity
+        else:
+            malformed = True
+
+        for source_name in ("data_type_alias", "dtd_identifier"):
+            value, valid = self._safe_discovery_text(row.get(source_name))
+            if valid and value is not None:
+                vendor_metadata[source_name] = value
+            elif not valid:
+                malformed = True
+        if identity is True:
+            identity_generation, generation_valid = self._safe_discovery_text(
+                row.get("identity_generation")
+            )
+            if generation_valid:
+                cleaned["identity_generation"] = identity_generation
+            else:
+                malformed = True
+            for source_name in ("identity_start", "identity_increment"):
+                value, valid = self._discovery_integer(row.get(source_name))
+                if valid and value is not None:
+                    vendor_metadata[source_name] = value
+                elif not valid:
+                    malformed = True
+            for source_name in ("identity_cycle", "identity_ordered"):
+                value, valid = self._safe_discovery_bool(row.get(source_name))
+                if valid and value is not None:
+                    vendor_metadata[source_name] = value
+                elif not valid:
+                    malformed = True
+        kind = cleaned.get("kind")
+        if isinstance(kind, str):
+            vendor_metadata["column_kind"] = kind
+        cleaned["vendor_metadata"] = vendor_metadata
+        return cleaned, malformed
+
+    @staticmethod
+    def _array_element_metadata(
+        rows: tuple[dict[str, Any], ...],
+    ) -> tuple[dict[str, tuple[str, str | None]], bool]:
+        """Index structured ARRAY element definitions without retaining raw rows."""
+        element_types: dict[str, tuple[str, str | None]] = {}
+        invalid_identifiers: set[str] = set()
+        malformed = False
+        for row in rows:
+            collection_id = row.get("collection_type_identifier")
+            data_type = row.get("data_type")
+            dtd_identifier = row.get("dtd_identifier")
+            if (
+                not isinstance(collection_id, str)
+                or collection_id == ""
+                or "\x00" in collection_id
+                or not isinstance(data_type, str)
+                or data_type == ""
+                or (dtd_identifier is not None and not isinstance(dtd_identifier, str))
+            ):
+                malformed = True
+                continue
+            candidate = (data_type, dtd_identifier)
+            if collection_id in invalid_identifiers:
+                continue
+            existing = element_types.get(collection_id)
+            if existing is None:
+                element_types[collection_id] = candidate
+            elif existing != candidate:
+                malformed = True
+                invalid_identifiers.add(collection_id)
+                element_types.pop(collection_id, None)
+        return element_types, malformed
+
+    @staticmethod
+    def _structured_array_details(
+        dtd_identifier: str,
+        element_types: Mapping[str, tuple[str, str | None]],
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Resolve a finite structured-array chain from exact DTD identifiers."""
+        current_identifier = dtd_identifier
+        dimensions = 0
+        seen: set[str] = set()
+        while current_identifier in element_types:
+            if current_identifier in seen:
+                return None, True
+            seen.add(current_identifier)
+            native_type, nested_identifier = element_types[current_identifier]
+            dimensions += 1
+            if native_type.strip().casefold() != "array" or not nested_identifier:
+                return {
+                    "array_dimensions": dimensions,
+                    "element_native_type": native_type,
+                }, False
+            current_identifier = nested_identifier
+        return None, False
+
+    @staticmethod
+    def _safe_key_constraint_rows(
+        rows: tuple[dict[str, Any], ...],
+    ) -> tuple[tuple[dict[str, Any], ...], frozenset[ConstraintType]]:
+        cleaned: list[dict[str, Any]] = []
+        malformed: set[ConstraintType] = set()
+        for row in rows:
+            raw_type = row.get("constraint_type")
+            constraint_type = {
+                "PRIMARY KEY": ConstraintType.PRIMARY_KEY,
+                "UNIQUE": ConstraintType.UNIQUE,
+            }.get(raw_type)
+            if constraint_type is None:
+                continue
+            name = row.get("constraint_name")
+            if not isinstance(name, str) or name == "" or "\x00" in name:
+                malformed.add(constraint_type)
+                continue
+            item: dict[str, Any] = {
+                "constraint_name": name,
+                "constraint_type": raw_type,
+                "vendor_metadata": {},
+            }
+            valid = True
+            for field_name in (
+                "is_enforced",
+                "is_rely",
+                "is_deferrable",
+                "initially_deferred",
+            ):
+                value = row.get(field_name)
+                if value is None or isinstance(value, bool):
+                    item[field_name] = value
+                else:
+                    valid = False
+            comment = row.get("comment")
+            if comment is None or isinstance(comment, str):
+                item["comment"] = comment
+            else:
+                valid = False
+            if not valid:
+                malformed.add(constraint_type)
+                continue
+            cleaned.append(item)
+        return tuple(cleaned), frozenset(malformed)
+
+    @staticmethod
+    def _safe_foreign_key_rows(
+        rows: tuple[dict[str, Any], ...],
+    ) -> tuple[tuple[dict[str, Any], ...], bool]:
+        cleaned: list[dict[str, Any]] = []
+        malformed = False
+        for row in rows:
+            required = (
+                row.get("constraint_name"),
+                row.get("referenced_catalog"),
+                row.get("referenced_schema"),
+                row.get("referenced_table"),
+            )
+            if any(
+                not isinstance(value, str) or value == "" or "\x00" in value
+                for value in required
+            ):
+                malformed = True
+                continue
+            item: dict[str, Any] = {
+                "constraint_name": required[0],
+                "referenced_catalog": required[1],
+                "referenced_schema": required[2],
+                "referenced_table": required[3],
+                "local_columns": (),
+                "referenced_columns": (),
+                "vendor_metadata": {},
+            }
+            valid = True
+            for field_name in ("match_option", "update_rule", "delete_rule", "comment"):
+                value = row.get(field_name)
+                if value is None or isinstance(value, str):
+                    item[field_name] = value
+                else:
+                    valid = False
+            for field_name in (
+                "is_enforced",
+                "is_rely",
+                "is_deferrable",
+                "initially_deferred",
+            ):
+                value = row.get(field_name)
+                if value is None or isinstance(value, bool):
+                    item[field_name] = value
+                else:
+                    valid = False
+            if not valid:
+                malformed = True
+                continue
+            cleaned.append(item)
+        return tuple(cleaned), malformed
+
+    @staticmethod
+    def _safe_check_constraint_rows(
+        rows: tuple[dict[str, Any], ...],
+        *,
+        catalog_name: str,
+        schema_name: str,
+        table_name: str,
+    ) -> tuple[tuple[dict[str, Any], ...], bool]:
+        cleaned: list[dict[str, Any]] = []
+        malformed = False
+        for row in rows:
+            identity = (
+                row.get("constraint_catalog"),
+                row.get("constraint_schema"),
+                row.get("constraint_table"),
+            )
+            name = row.get("constraint_name")
+            expression = row.get("expression")
+            if (
+                identity != (catalog_name, schema_name, table_name)
+                or not isinstance(name, str)
+                or name == ""
+                or "\x00" in name
+                or not isinstance(expression, str)
+                or not expression.strip()
+            ):
+                malformed = True
+                continue
+            cleaned.append(
+                {
+                    "constraint_name": name,
+                    "expression": expression,
+                    "vendor_metadata": {},
+                }
+            )
+        return tuple(cleaned), malformed
+
+    @staticmethod
+    def _sorted_key_constraints(
+        rows: tuple[dict[str, Any], ...],
+        constraint_type: ConstraintType,
+    ) -> tuple[Any, ...]:
+        models = tuple(
+            normalize_snowflake_key_constraint(row, constraint_type=constraint_type)
+            for row in rows
+            if row.get("constraint_type")
+            == ("PRIMARY KEY" if constraint_type is ConstraintType.PRIMARY_KEY else "UNIQUE")
+        )
+        models = deduplicate_models(models, lambda item: (item.constraint_type, item.name, item.columns))
+        return tuple(sorted(models, key=lambda item: (item.name is None, item.name or "", item.columns)))
+
+    @staticmethod
+    def _sorted_foreign_keys(rows: tuple[dict[str, Any], ...]) -> tuple[Any, ...]:
+        models = tuple(normalize_snowflake_foreign_key(row) for row in rows)
+        models = deduplicate_models(
+            models,
+            lambda item: (
+                item.name,
+                item.local_columns,
+                item.referenced_catalog,
+                item.referenced_schema,
+                item.referenced_table,
+                item.referenced_columns,
+            ),
+        )
+        return tuple(
+            sorted(
+                models,
+                key=lambda item: (
+                    item.name is None,
+                    item.name or "",
+                    item.referenced_catalog or "",
+                    item.referenced_schema or "",
+                    item.referenced_table,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _sorted_check_constraints(rows: tuple[dict[str, Any], ...]) -> tuple[Any, ...]:
+        models = tuple(normalize_snowflake_check_constraint(row) for row in rows)
+        models = deduplicate_models(models, lambda item: (item.name, item.expression))
+        return tuple(sorted(models, key=lambda item: (item.name is None, item.name or "", item.expression)))
+
+    def get_table_metadata(
+        self,
+        *,
+        database: str | None = None,
+        schema: str,
+        table: str,
+        timeout_seconds: int | None = None,
+    ) -> TableMetadata | None:
+        """Return canonical metadata for one Snowflake table-like object."""
+        self._validate_discovery_timeout(timeout_seconds)
+        target_schema = self._validate_discovery_identifier(schema, "schema")
+        target_table = self._validate_discovery_identifier(table, "table")
+        profile = self._profile()
+        target_database = self._resolve_discovery_database(database, profile)
+        effective_timeout = timeout_seconds or profile.timeout_seconds
+        parameters = (target_database, target_schema, target_table)
+
+        with self._discovery_connection(profile, target_database, timeout_seconds) as connection:
+            self._verify_discovery_database(connection, target_database, effective_timeout)
+            base_rows = self._execute_discovery_query(
+                connection,
+                discovery_queries._TABLE_METADATA_QUERY,
+                parameters,
+                effective_timeout,
+            )
+            if not base_rows:
+                return None
+            if len(base_rows) != 1:
+                raise MalformedDiscoveryResultError("Schema discovery returned malformed data.")
+            safe_object = self._safe_object_row(base_rows[0])
+            if (
+                safe_object["catalog_name"] != target_database
+                or safe_object["schema_name"] != target_schema
+                or safe_object["object_name"] != target_table
+            ):
+                raise MalformedDiscoveryResultError("Schema discovery returned malformed data.")
+            try:
+                object_metadata = normalize_snowflake_object(safe_object)
+            except (TypeError, ValueError, KeyError):
+                raise MalformedDiscoveryResultError(
+                    "Schema discovery returned malformed data."
+                ) from None
+            if object_metadata.object_type not in {
+                DatabaseObjectType.TABLE,
+                DatabaseObjectType.VIEW,
+                DatabaseObjectType.MATERIALIZED_VIEW,
+                DatabaseObjectType.EXTERNAL_TABLE,
+                DatabaseObjectType.DYNAMIC_TABLE,
+            }:
+                raise SchemaDiscoveryError(
+                    "Table metadata discovery does not support this object type."
+                )
+
+            warnings: set[str] = set()
+            raw_row_count = base_rows[0].get("estimated_row_count")
+            normalized_row_count = self._estimated_row_count(raw_row_count)
+            if raw_row_count is None:
+                estimated_row_count_status = CoverageStatus.UNAVAILABLE
+                warnings.add("ESTIMATED_ROW_COUNT_UNAVAILABLE")
+            elif normalized_row_count is None:
+                estimated_row_count_status = CoverageStatus.PARTIAL
+                warnings.add("ESTIMATED_ROW_COUNT_PARTIAL")
+            else:
+                estimated_row_count_status = CoverageStatus.COMPLETE
+
+            raw_clustering = base_rows[0].get("clustering_expression")
+            raw_auto_clustering = base_rows[0].get("auto_clustering_on")
+            raw_has_clustering_key = base_rows[0].get("has_clustering_key")
+            if object_metadata.object_type in {
+                DatabaseObjectType.VIEW,
+                DatabaseObjectType.EXTERNAL_TABLE,
+            }:
+                clustering_expression = None
+                clustering_status = CoverageStatus.NOT_APPLICABLE
+            elif not (
+                raw_clustering is None or isinstance(raw_clustering, str)
+            ) or not (
+                raw_has_clustering_key is None
+                or isinstance(raw_has_clustering_key, bool)
+            ):
+                clustering_expression = None
+                clustering_status = CoverageStatus.PARTIAL
+                warnings.add("CLUSTERING_PARTIAL")
+            elif raw_auto_clustering is None:
+                clustering_expression = raw_clustering
+                clustering_status = CoverageStatus.UNAVAILABLE
+                warnings.add("CLUSTERING_UNAVAILABLE")
+            elif isinstance(raw_auto_clustering, bool):
+                clustering_expression = raw_clustering
+                clustering_status = CoverageStatus.COMPLETE
+            else:
+                clustering_expression = None
+                clustering_status = CoverageStatus.PARTIAL
+                warnings.add("CLUSTERING_PARTIAL")
+
+            column_rows = self._optional_discovery_query(
+                connection,
+                discovery_queries._COLUMNS_QUERY,
+                parameters,
+                effective_timeout,
+            )
+            safe_columns: list[dict[str, Any]] = []
+            columns_malformed = False
+            elements_unavailable = False
+            if column_rows is None:
+                columns_status = CoverageStatus.UNAVAILABLE
+                comments_status = CoverageStatus.PARTIAL
+                warnings.add("COLUMNS_UNAVAILABLE")
+            else:
+                for row in column_rows:
+                    safe_column, malformed = self._safe_column_row(row)
+                    columns_malformed = columns_malformed or malformed
+                    if safe_column is not None:
+                        safe_columns.append(safe_column)
+                array_columns = [
+                    row
+                    for row in safe_columns
+                    if row["data_type"].strip().casefold() == "array"
+                ]
+                if array_columns:
+                    element_rows = self._optional_discovery_query(
+                        connection,
+                        discovery_queries._ELEMENT_TYPES_QUERY,
+                        parameters,
+                        effective_timeout,
+                    )
+                    if element_rows is None:
+                        elements_unavailable = True
+                        warnings.add("STRUCTURED_ARRAY_TYPES_UNAVAILABLE")
+                    else:
+                        element_types, malformed_elements = self._array_element_metadata(element_rows)
+                        columns_malformed = columns_malformed or malformed_elements
+                        for row in safe_columns:
+                            dtd_identifier = row["vendor_metadata"].get("dtd_identifier")
+                            if (
+                                row["data_type"].strip().casefold() == "array"
+                                and isinstance(dtd_identifier, str)
+                            ):
+                                details, malformed = self._structured_array_details(
+                                    dtd_identifier,
+                                    element_types,
+                                )
+                                columns_malformed = columns_malformed or malformed
+                                if details is not None:
+                                    row.update(details)
+                if not safe_columns:
+                    columns_status = CoverageStatus.PARTIAL
+                    comments_status = CoverageStatus.PARTIAL
+                    warnings.add("COLUMNS_PARTIAL")
+                elif columns_malformed or elements_unavailable:
+                    columns_status = CoverageStatus.PARTIAL
+                    comments_status = CoverageStatus.PARTIAL
+                    warnings.add("COLUMNS_PARTIAL")
+                else:
+                    columns_status = CoverageStatus.COMPLETE
+                    comments_status = CoverageStatus.COMPLETE
+
+            key_rows: tuple[dict[str, Any], ...] | None = None
+            safe_key_rows: tuple[dict[str, Any], ...] = ()
+            malformed_key_types: frozenset[ConstraintType] = frozenset()
+            if object_metadata.object_type is DatabaseObjectType.TABLE:
+                key_rows = self._optional_discovery_query(
+                    connection,
+                    discovery_queries._KEY_CONSTRAINTS_QUERY,
+                    parameters,
+                    effective_timeout,
+                )
+                if key_rows is not None:
+                    safe_key_rows, malformed_key_types = self._safe_key_constraint_rows(key_rows)
+
+            if object_metadata.object_type is DatabaseObjectType.DYNAMIC_TABLE:
+                primary_key_status = CoverageStatus.UNAVAILABLE
+                unique_status = CoverageStatus.UNAVAILABLE
+                warnings.add("DYNAMIC_TABLE_KEYS_UNAVAILABLE")
+            elif object_metadata.object_type is not DatabaseObjectType.TABLE:
+                primary_key_status = CoverageStatus.NOT_APPLICABLE
+                unique_status = CoverageStatus.NOT_APPLICABLE
+            elif key_rows is None:
+                primary_key_status = CoverageStatus.UNAVAILABLE
+                unique_status = CoverageStatus.UNAVAILABLE
+                warnings.update({"PRIMARY_KEY_UNAVAILABLE", "UNIQUE_CONSTRAINTS_UNAVAILABLE"})
+            else:
+                has_primary = any(
+                    row.get("constraint_type") == "PRIMARY KEY" for row in safe_key_rows
+                )
+                has_unique = any(
+                    row.get("constraint_type") == "UNIQUE" for row in safe_key_rows
+                )
+                primary_key_status = (
+                    CoverageStatus.PARTIAL
+                    if has_primary or ConstraintType.PRIMARY_KEY in malformed_key_types
+                    else CoverageStatus.COMPLETE
+                )
+                unique_status = (
+                    CoverageStatus.PARTIAL
+                    if has_unique or ConstraintType.UNIQUE in malformed_key_types
+                    else CoverageStatus.COMPLETE
+                )
+                if has_primary:
+                    warnings.add("PRIMARY_KEY_MEMBERSHIP_UNAVAILABLE")
+                elif ConstraintType.PRIMARY_KEY in malformed_key_types:
+                    warnings.add("PRIMARY_KEY_PARTIAL")
+                if has_unique:
+                    warnings.add("UNIQUE_CONSTRAINT_MEMBERSHIP_UNAVAILABLE")
+                elif ConstraintType.UNIQUE in malformed_key_types:
+                    warnings.add("UNIQUE_CONSTRAINTS_PARTIAL")
+
+            foreign_rows: tuple[dict[str, Any], ...] | None = None
+            safe_foreign_rows: tuple[dict[str, Any], ...] = ()
+            malformed_foreign_keys = False
+            if object_metadata.object_type is DatabaseObjectType.TABLE:
+                foreign_rows = self._optional_discovery_query(
+                    connection,
+                    discovery_queries._FOREIGN_KEYS_QUERY,
+                    parameters,
+                    effective_timeout,
+                )
+                if foreign_rows is not None:
+                    safe_foreign_rows, malformed_foreign_keys = self._safe_foreign_key_rows(
+                        foreign_rows
+                    )
+            if object_metadata.object_type is not DatabaseObjectType.TABLE:
+                foreign_key_status = CoverageStatus.NOT_APPLICABLE
+            elif foreign_rows is None:
+                foreign_key_status = CoverageStatus.UNAVAILABLE
+                warnings.add("FOREIGN_KEYS_UNAVAILABLE")
+            elif safe_foreign_rows or malformed_foreign_keys:
+                foreign_key_status = CoverageStatus.PARTIAL
+                warnings.add(
+                    "FOREIGN_KEY_MEMBERSHIP_UNAVAILABLE"
+                    if safe_foreign_rows
+                    else "FOREIGN_KEYS_PARTIAL"
+                )
+            else:
+                foreign_key_status = CoverageStatus.COMPLETE
+
+            is_hybrid = object_metadata.vendor_metadata.get("is_hybrid") is True
+            check_rows: tuple[dict[str, Any], ...] | None = None
+            safe_check_rows: tuple[dict[str, Any], ...] = ()
+            malformed_checks = False
+            check_applicable = (
+                object_metadata.object_type is DatabaseObjectType.TABLE and not is_hybrid
+            )
+            if check_applicable:
+                check_rows = self._optional_discovery_query(
+                    connection,
+                    discovery_queries._CHECK_CONSTRAINTS_QUERY,
+                    parameters,
+                    effective_timeout,
+                )
+                if check_rows is not None:
+                    safe_check_rows, malformed_checks = self._safe_check_constraint_rows(
+                        check_rows,
+                        catalog_name=target_database,
+                        schema_name=target_schema,
+                        table_name=target_table,
+                    )
+            if not check_applicable:
+                check_status = CoverageStatus.NOT_APPLICABLE
+            elif check_rows is None:
+                check_status = CoverageStatus.UNAVAILABLE
+                warnings.add("CHECK_CONSTRAINTS_UNAVAILABLE")
+            elif malformed_checks:
+                check_status = CoverageStatus.PARTIAL
+                warnings.add("CHECK_CONSTRAINTS_PARTIAL")
+            else:
+                check_status = CoverageStatus.COMPLETE
+
+            view_definition = None
+            if object_metadata.object_type is DatabaseObjectType.VIEW:
+                view_rows = self._optional_discovery_query(
+                    connection,
+                    discovery_queries._VIEW_DEFINITION_QUERY,
+                    parameters,
+                    effective_timeout,
+                )
+                if (
+                    view_rows is not None
+                    and len(view_rows) == 1
+                    and view_rows[0].get("is_secure") is not True
+                    and isinstance(view_rows[0].get("view_definition"), str)
+                    and view_rows[0]["view_definition"].strip()
+                ):
+                    view_definition = view_rows[0]["view_definition"]
+                    view_status = CoverageStatus.COMPLETE
+                else:
+                    view_status = CoverageStatus.UNAVAILABLE
+                    warnings.add("VIEW_DEFINITION_UNAVAILABLE")
+            elif object_metadata.object_type is DatabaseObjectType.MATERIALIZED_VIEW:
+                view_status = CoverageStatus.UNAVAILABLE
+                warnings.add("VIEW_DEFINITION_UNAVAILABLE")
+            else:
+                view_status = CoverageStatus.NOT_APPLICABLE
+
+            try:
+                columns = deduplicate_and_sort_columns(
+                    normalize_snowflake_column(
+                        row,
+                        catalog_name=object_metadata.catalog_name,
+                        schema_name=object_metadata.schema_name,
+                        table_name=object_metadata.object_name,
+                    )
+                    for row in safe_columns
+                )
+                primary_keys = self._sorted_key_constraints(
+                    safe_key_rows,
+                    ConstraintType.PRIMARY_KEY,
+                )
+                unique_constraints = self._sorted_key_constraints(
+                    safe_key_rows,
+                    ConstraintType.UNIQUE,
+                )
+                foreign_keys = self._sorted_foreign_keys(safe_foreign_rows)
+                check_constraints = self._sorted_check_constraints(safe_check_rows)
+                if len(primary_keys) > 1:
+                    primary_key_status = CoverageStatus.PARTIAL
+                    warnings.add("PRIMARY_KEY_PARTIAL")
+                coverage = DiscoveryCoverage(
+                    columns=columns_status,
+                    primary_key=primary_key_status,
+                    unique_constraints=unique_status,
+                    foreign_keys=foreign_key_status,
+                    check_constraints=check_status,
+                    comments=comments_status,
+                    estimated_row_count=estimated_row_count_status,
+                    view_definition=view_status,
+                    partitioning=CoverageStatus.NOT_APPLICABLE,
+                    clustering=clustering_status,
+                    warnings=tuple(sorted(warnings)),
+                )
+                return TableMetadata(
+                    catalog_name=object_metadata.catalog_name,
+                    schema_name=object_metadata.schema_name,
+                    object_name=object_metadata.object_name,
+                    system=object_metadata.system,
+                    object_type=object_metadata.object_type,
+                    persistence=object_metadata.persistence,
+                    owner=object_metadata.owner,
+                    comment=object_metadata.comment,
+                    estimated_row_count=object_metadata.estimated_row_count,
+                    is_system_managed=object_metadata.is_system_managed,
+                    columns=columns,
+                    primary_key=primary_keys[0] if primary_keys else None,
+                    unique_constraints=unique_constraints,
+                    foreign_keys=foreign_keys,
+                    check_constraints=check_constraints,
+                    view_definition=view_definition,
+                    clustering_expression=clustering_expression,
+                    is_partitioned=None,
+                    partitioning_expression=None,
+                    coverage=coverage,
+                    vendor_metadata=object_metadata.vendor_metadata,
+                )
+            except (TypeError, ValueError, KeyError):
+                raise MalformedDiscoveryResultError(
+                    "Schema discovery returned malformed data."
+                ) from None
 
     def close(self) -> None:
         """Satisfy the connector contract; sessions are already per-call."""

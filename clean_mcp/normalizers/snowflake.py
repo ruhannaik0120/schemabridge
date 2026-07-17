@@ -73,6 +73,7 @@ def normalize_snowflake_column(
     native_type = optional_text(value_for(row, "data_type", "native_type"))
     numeric_scale = optional_int(value_for(row, "numeric_scale"))
     element_native_type = optional_text(value_for(row, "element_native_type", "array_element_type"))
+    explicit_vendor_metadata = value_for(row, "vendor_metadata")
     return ColumnMetadata(
         catalog_name=optional_text(catalog_name),
         schema_name=optional_text(schema_name),
@@ -88,7 +89,7 @@ def normalize_snowflake_column(
         datetime_precision=optional_int(value_for(row, "datetime_precision")),
         is_primary_key=is_primary_key if is_primary_key is not None else optional_bool(value_for(row, "is_primary_key", "primary_key")),
         is_foreign_key=is_foreign_key if is_foreign_key is not None else optional_bool(value_for(row, "is_foreign_key", "foreign_key")),
-        vendor_metadata=row,
+        vendor_metadata=(explicit_vendor_metadata if isinstance(explicit_vendor_metadata, Mapping) else row),
         default_expression=optional_text(value_for(row, "column_default", "default_expression", "default")),
         comment=optional_text(value_for(row, "column_comment", "comment")),
         collation=optional_text(value_for(row, "collation_name", "collation")),
