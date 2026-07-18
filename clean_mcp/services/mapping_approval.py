@@ -57,6 +57,7 @@ class MappingApprovalService:
                 original_compatibility=item.compatibility,
                 original_evidence=item.evidence,
                 compatibility=item.compatibility,
+                target_ordinal_position=None,
             )
             for item in plan.suggestions
         )
@@ -116,6 +117,7 @@ class MappingApprovalService:
                     original_compatibility=base.compatibility,
                     original_evidence=base.evidence,
                     compatibility=base.compatibility,
+                    target_ordinal_position=(target_columns[base.target_column].ordinal_position if base.target_column in target_columns else None),
                 ))
                 continue
 
@@ -159,6 +161,7 @@ class MappingApprovalService:
                     if selected_target is not None and selected_target in target_columns
                     else base.compatibility
                 ),
+                target_ordinal_position=(target_columns[selected_target].ordinal_position if selected_target in target_columns else None),
                 reviewer_note=decision.reviewer_note,
                 override_reason=decision.override_reason,
                 transformation=decision.transformation,

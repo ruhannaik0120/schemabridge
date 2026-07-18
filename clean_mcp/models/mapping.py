@@ -40,6 +40,15 @@ class TransformationExpressionType(str, Enum):
     DIRECT_COPY = "DIRECT_COPY"
 
 
+class SqlDialect(str, Enum):
+    SNOWFLAKE = "SNOWFLAKE"
+
+
+class TransformationStatementType(str, Enum):
+    SELECT = "SELECT"
+    INSERT_SELECT = "INSERT_SELECT"
+
+
 def _validate_fixed_code(value: str, field_name: str) -> None:
     if not isinstance(value, str) or re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", value) is None:
         raise ValueError(f"{field_name} must be a fixed safe code.")
@@ -222,6 +231,7 @@ class ColumnMappingApproval(_MetadataModel):
     original_compatibility: ColumnCompatibility
     original_evidence: tuple[MappingEvidence, ...]
     compatibility: ColumnCompatibility
+    target_ordinal_position: int | None = None
     reviewer_note: str | None = None
     override_reason: str | None = None
     transformation: TransformationExpression | None = None
@@ -244,6 +254,12 @@ class ColumnMappingApproval(_MetadataModel):
             raise TypeError("original_compatibility must be a ColumnCompatibility.")
         if not isinstance(self.compatibility, ColumnCompatibility):
             raise TypeError("compatibility must be a ColumnCompatibility.")
+        if self.target_ordinal_position is not None and (
+            isinstance(self.target_ordinal_position, bool)
+            or not isinstance(self.target_ordinal_position, int)
+            or self.target_ordinal_position < 0
+        ):
+            raise ValueError("target_ordinal_position must be a non-negative integer or None.")
         if not isinstance(self.original_evidence, tuple) or not all(
             isinstance(item, MappingEvidence) for item in self.original_evidence
         ):
@@ -381,6 +397,59 @@ class ApprovedTableMappingPlan(_MetadataModel):
         return _json_value({name: getattr(self, name) for name in self.__dataclass_fields__})
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GeneratedTransformationSql(_MetadataModel):
+    dialect: SqlDialect
+    statement_type: TransformationStatementType
+    sql: str
+    parameters: tuple[object, ...]
+    source_relation: tuple[str, str, str]
+    target_relation: tuple[str | None, str, str]
+    source_columns: tuple[str, ...]
+    target_columns: tuple[str, ...]
+    approved_plan_version: int
+    warnings: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.dialect, SqlDialect) or not isinstance(self.statement_type, TransformationStatementType):
+            raise TypeError("dialect and statement_type must be SQL enums.")
+        if not isinstance(self.sql, str) or not self.sql.strip():
+            raise ValueError("sql must be non-empty.")
+        if not isinstance(self.parameters, tuple):
+            raise TypeError("parameters must be a tuple.")
+        for value in self.parameters:
+            if not _safe_literal(value):
+                raise TypeError("parameters must contain safe scalar literals.")
+        for relation in (self.source_relation, self.target_relation):
+            if not isinstance(relation, tuple) or len(relation) != 3:
+                raise TypeError("relations must be three-component tuples.")
+        for field_name in ("source_columns", "target_columns"):
+            values = getattr(self, field_name)
+            if not isinstance(values, tuple):
+                raise TypeError(f"{field_name} must be a tuple.")
+            for value in values:
+                _validate_identifier(value, field_name, required=True)
+        if isinstance(self.approved_plan_version, bool) or not isinstance(self.approved_plan_version, int) or self.approved_plan_version < 1:
+            raise ValueError("approved_plan_version must be positive.")
+        if self.warnings != tuple(sorted(set(self.warnings))):
+            raise ValueError("warnings must be sorted and deduplicated.")
+
+    def to_dict(self) -> dict[str, object]:
+        return _json_value({name: getattr(self, name) for name in self.__dataclass_fields__})
+
+
+def _safe_literal(value: object) -> bool:
+    from datetime import date, datetime, time
+    from decimal import Decimal
+    return (
+        value is None
+        or isinstance(value, (str, bool, date, datetime, time))
+        or (isinstance(value, int) and not isinstance(value, bool))
+        or (isinstance(value, float) and math.isfinite(value))
+        or (isinstance(value, Decimal) and value.is_finite())
+    )
+
+
 __all__ = [
     "ColumnCompatibility",
     "ColumnMappingApproval",
@@ -394,4 +463,7 @@ __all__ = [
     "TableMappingPlan",
     "TransformationExpression",
     "TransformationExpressionType",
+    "GeneratedTransformationSql",
+    "SqlDialect",
+    "TransformationStatementType",
 ]
