@@ -98,6 +98,7 @@ class DatabaseConnector(ABC):
         self,
         query: str,
         *,
+        parameters: tuple[object, ...] | None = None,
         database: str | None = None,
         timeout_seconds: int | None = None,
         max_rows: int | None = None,

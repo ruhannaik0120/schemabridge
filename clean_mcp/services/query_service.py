@@ -773,6 +773,7 @@ class QueryService:
         query: str = "",
         database: str | None = None,
         schema: str | None = None,
+        parameters: tuple[object, ...] | list[object] | None = None,
         environment: str | None = None,
         timeout_seconds: int | None = None,
         max_rows: int | None = None,
@@ -783,6 +784,9 @@ class QueryService:
         request_id, request_token, environment_token, start_time, requested_environment = self._begin_request(_tool_name)
         statement = sql or query
         try:
+            if parameters is not None and (isinstance(parameters, (str, bytes, dict)) or not isinstance(parameters, (tuple, list))):
+                raise ConfigError("parameters must be a sequence.")
+            bound_parameters = tuple(parameters or ())
             normalized_sql = (sql or "").strip()
             normalized_query = (query or "").strip()
             if normalized_sql and normalized_query and normalized_sql != normalized_query:
@@ -823,14 +827,14 @@ class QueryService:
                 )
 
             target_database = self._execution_database(database)
-            payload = self.connector.execute_query(
-                # QueryService owns policy and response behavior; the selected
-                # connector owns dialect details and transaction semantics.
-                statement,
-                database=target_database,
-                timeout_seconds=self._effective_timeout(timeout_seconds),
-                max_rows=row_limit,
-            )
+            execution_kwargs = {
+                "database": target_database,
+                "timeout_seconds": self._effective_timeout(timeout_seconds),
+                "max_rows": row_limit,
+            }
+            if bound_parameters:
+                execution_kwargs["parameters"] = bound_parameters
+            payload = self.connector.execute_query(statement, **execution_kwargs)
             columns = payload.get("columns", [])
             rows = payload.get("rows", [])
             response = self._response(

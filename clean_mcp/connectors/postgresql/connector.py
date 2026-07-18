@@ -236,14 +236,14 @@ class PostgreSQLConnector(DatabaseConnector):
             cursor.close()
         return {"connector_type": self.__class__.__name__, "db_type": profile.db_type, "database": target_database, "schema": target_schema, "table": table, "column_count": len(payload["rows"]), "columns": payload["rows"]}
 
-    def execute_query(self, query: str, *, database: str | None = None, timeout_seconds: int | None = None, max_rows: int | None = None) -> Any:
+    def execute_query(self, query: str, *, parameters: tuple[object, ...] | None = None, database: str | None = None, timeout_seconds: int | None = None, max_rows: int | None = None) -> Any:
         """Execute validated SQL and normalize read or committed write output."""
         profile = self._profile()
         target_database = self._normalize_database(database, profile.database)
         limited_query = self._row_limit_sql(query, max_rows or profile.max_rows)
         with self._connection(database=target_database, timeout_seconds=timeout_seconds) as conn:
             cursor = conn.cursor()
-            cursor.execute(limited_query)
+            cursor.execute(limited_query, parameters) if parameters else cursor.execute(limited_query)
             payload = self._fetch_rows(cursor, max_rows or profile.max_rows)
             rows_affected = cursor.rowcount if cursor.description is None else len(payload["rows"])
             # psycopg opens a transaction automatically. Commit every successful
