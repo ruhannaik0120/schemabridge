@@ -18,6 +18,7 @@ from connectors.discovery import (
     SchemaDiscoveryTimeoutError,
 )
 from connectors.snowflake import _discovery_queries as discovery_queries
+from connectors.snowflake._discovery_commands import _show_primary_keys_command
 from models.discovery import (
     ConstraintType,
     CoverageStatus,
@@ -711,6 +712,165 @@ class SnowflakeConnector(DatabaseConnector):
                 return None
             self._raise_discovery_error(error)
 
+    def _primary_key_membership_rows(
+        self,
+        connection: Any,
+        *,
+        database: str,
+        schema: str,
+        table: str,
+        timeout_seconds: int,
+    ) -> tuple[tuple[dict[str, Any], ...] | None, bool]:
+        """Fetch allowlisted SHOW PRIMARY KEYS fields directly from its cursor."""
+        cursor = connection.cursor()
+        try:
+            try:
+                cursor.execute(
+                    _show_primary_keys_command(database, schema, table),
+                    timeout=timeout_seconds,
+                )
+                description = cursor.description
+                if not isinstance(description, (list, tuple)):
+                    return (), True
+                names: list[str] = []
+                indexes: dict[str, int] = {}
+                for index, field in enumerate(description):
+                    if not isinstance(field, (list, tuple)) or not field or not isinstance(field[0], str):
+                        return (), True
+                    normalized = field[0].casefold()
+                    if normalized in indexes:
+                        return (), True
+                    names.append(field[0])
+                    indexes[normalized] = index
+                required = {
+                    "database_name",
+                    "schema_name",
+                    "table_name",
+                    "constraint_name",
+                    "column_name",
+                    "key_sequence",
+                }
+                if not required.issubset(indexes):
+                    return (), True
+
+                projected: list[dict[str, Any]] = []
+                for raw_row in cursor.fetchall():
+                    if isinstance(raw_row, Mapping):
+                        folded: dict[str, Any] = {}
+                        duplicate = False
+                        for key, value in raw_row.items():
+                            if not isinstance(key, str):
+                                duplicate = True
+                                break
+                            normalized = key.casefold()
+                            if normalized not in required and normalized != "comment":
+                                continue
+                            if normalized in folded:
+                                duplicate = True
+                                break
+                            folded[normalized] = value
+                        if duplicate or not required.issubset(folded):
+                            return (), True
+                        value_for = folded.get
+                    elif isinstance(raw_row, (list, tuple)) and len(raw_row) == len(names):
+                        value_for = lambda name, row=raw_row: row[indexes[name]]
+                    else:
+                        return (), True
+                    item = {name: value_for(name) for name in required}
+                    if "comment" in indexes or isinstance(raw_row, Mapping):
+                        item["comment"] = value_for("comment")
+                    if any(item[name] is None for name in required):
+                        return (), True
+                    projected.append(item)
+                return tuple(projected), False
+            except Exception as error:
+                if self._is_insufficient_privilege(error):
+                    return None, False
+                self._raise_discovery_error(error)
+        finally:
+            cursor.close()
+
+    def _reconcile_primary_key_membership(
+        self,
+        header_rows: tuple[dict[str, Any], ...],
+        membership_rows: tuple[dict[str, Any], ...],
+        *,
+        catalog_name: str,
+        schema_name: str,
+        table_name: str,
+        complete_columns: frozenset[str] | None,
+    ) -> tuple[tuple[dict[str, Any], ...], str | None]:
+        """Attach one complete ordered PK membership without weakening its header."""
+        primary_headers = [
+            dict(row) for row in header_rows if row.get("constraint_type") == "PRIMARY KEY"
+        ]
+        header_by_name = {row["constraint_name"]: row for row in primary_headers}
+        if len(header_by_name) != len(primary_headers):
+            return header_rows, "PRIMARY_KEY_MEMBERSHIP_PARTIAL"
+        if not membership_rows:
+            return header_rows, "PRIMARY_KEY_MEMBERSHIP_UNAVAILABLE"
+
+        grouped: dict[str, list[tuple[int, str]]] = {}
+        seen_rows: set[tuple[str, int, str]] = set()
+        for row in membership_rows:
+            name = row.get("constraint_name")
+            identity = (
+                row.get("database_name"),
+                row.get("schema_name"),
+                row.get("table_name"),
+            )
+            if identity != (catalog_name, schema_name, table_name) or name not in header_by_name:
+                return header_rows, "PRIMARY_KEY_MEMBERSHIP_UNMATCHED"
+            column_name = row.get("column_name")
+            sequence, valid_sequence = self._discovery_integer(row.get("key_sequence"), minimum=1)
+            if (
+                not isinstance(column_name, str)
+                or column_name == ""
+                or "\x00" in column_name
+                or not valid_sequence
+                or sequence is None
+            ):
+                return header_rows, "PRIMARY_KEY_MEMBERSHIP_PARTIAL"
+            row_identity = (name, sequence, column_name)
+            if row_identity in seen_rows:
+                return header_rows, "PRIMARY_KEY_MEMBERSHIP_PARTIAL"
+            seen_rows.add(row_identity)
+            grouped.setdefault(name, []).append((sequence, column_name))
+
+            show_comment = row.get("comment")
+            header_comment = header_by_name[name].get("comment")
+            if show_comment is not None and (
+                not isinstance(show_comment, str)
+                or (header_comment is not None and show_comment != header_comment)
+            ):
+                return header_rows, "PRIMARY_KEY_MEMBERSHIP_CONFLICT"
+
+        if set(grouped) != set(header_by_name):
+            return header_rows, "PRIMARY_KEY_MEMBERSHIP_UNAVAILABLE"
+        for name, members in grouped.items():
+            positions = [position for position, _ in members]
+            columns = [column for _, column in members]
+            if (
+                len(set(positions)) != len(positions)
+                or len(set(columns)) != len(columns)
+                or sorted(positions) != list(range(1, len(positions) + 1))
+            ):
+                return header_rows, "PRIMARY_KEY_MEMBERSHIP_PARTIAL"
+            ordered_columns = tuple(column for _, column in sorted(members))
+            if complete_columns is not None and any(
+                column not in complete_columns for column in ordered_columns
+            ):
+                return header_rows, "PRIMARY_KEY_MEMBERSHIP_PARTIAL"
+            header_by_name[name]["columns"] = ordered_columns
+
+        reconciled = tuple(
+            header_by_name[row["constraint_name"]]
+            if row.get("constraint_type") == "PRIMARY KEY"
+            else row
+            for row in header_rows
+        )
+        return reconciled, None
+
     def _safe_column_row(
         self,
         row: Mapping[str, Any],
@@ -1212,7 +1372,12 @@ class SnowflakeConnector(DatabaseConnector):
             key_rows: tuple[dict[str, Any], ...] | None = None
             safe_key_rows: tuple[dict[str, Any], ...] = ()
             malformed_key_types: frozenset[ConstraintType] = frozenset()
-            if object_metadata.object_type is DatabaseObjectType.TABLE:
+            key_applicable = object_metadata.object_type in {
+                DatabaseObjectType.TABLE,
+                DatabaseObjectType.EXTERNAL_TABLE,
+                DatabaseObjectType.DYNAMIC_TABLE,
+            }
+            if key_applicable:
                 key_rows = self._optional_discovery_query(
                     connection,
                     discovery_queries._KEY_CONSTRAINTS_QUERY,
@@ -1222,11 +1387,7 @@ class SnowflakeConnector(DatabaseConnector):
                 if key_rows is not None:
                     safe_key_rows, malformed_key_types = self._safe_key_constraint_rows(key_rows)
 
-            if object_metadata.object_type is DatabaseObjectType.DYNAMIC_TABLE:
-                primary_key_status = CoverageStatus.UNAVAILABLE
-                unique_status = CoverageStatus.UNAVAILABLE
-                warnings.add("DYNAMIC_TABLE_KEYS_UNAVAILABLE")
-            elif object_metadata.object_type is not DatabaseObjectType.TABLE:
+            if not key_applicable:
                 primary_key_status = CoverageStatus.NOT_APPLICABLE
                 unique_status = CoverageStatus.NOT_APPLICABLE
             elif key_rows is None:
@@ -1258,6 +1419,44 @@ class SnowflakeConnector(DatabaseConnector):
                     warnings.add("UNIQUE_CONSTRAINT_MEMBERSHIP_UNAVAILABLE")
                 elif ConstraintType.UNIQUE in malformed_key_types:
                     warnings.add("UNIQUE_CONSTRAINTS_PARTIAL")
+
+            has_primary_header = any(
+                row.get("constraint_type") == "PRIMARY KEY" for row in safe_key_rows
+            )
+            if key_applicable and key_rows is not None and has_primary_header:
+                membership_rows, malformed_membership = self._primary_key_membership_rows(
+                    connection,
+                    database=target_database,
+                    schema=target_schema,
+                    table=target_table,
+                    timeout_seconds=effective_timeout,
+                )
+                if membership_rows is None:
+                    primary_key_status = CoverageStatus.PARTIAL
+                    warnings.add("PRIMARY_KEY_MEMBERSHIP_UNAVAILABLE")
+                elif malformed_membership:
+                    primary_key_status = CoverageStatus.PARTIAL
+                    warnings.discard("PRIMARY_KEY_MEMBERSHIP_UNAVAILABLE")
+                    warnings.add("PRIMARY_KEY_MEMBERSHIP_PARTIAL")
+                else:
+                    safe_key_rows, membership_warning = self._reconcile_primary_key_membership(
+                        safe_key_rows,
+                        membership_rows,
+                        catalog_name=target_database,
+                        schema_name=target_schema,
+                        table_name=target_table,
+                        complete_columns=(
+                            frozenset(row["column_name"] for row in safe_columns)
+                            if columns_status is CoverageStatus.COMPLETE
+                            else None
+                        ),
+                    )
+                    warnings.discard("PRIMARY_KEY_MEMBERSHIP_UNAVAILABLE")
+                    if membership_warning is None:
+                        primary_key_status = CoverageStatus.COMPLETE
+                    else:
+                        primary_key_status = CoverageStatus.PARTIAL
+                        warnings.add(membership_warning)
 
             foreign_rows: tuple[dict[str, Any], ...] | None = None
             safe_foreign_rows: tuple[dict[str, Any], ...] = ()

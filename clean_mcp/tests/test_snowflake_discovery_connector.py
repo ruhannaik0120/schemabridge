@@ -19,6 +19,7 @@ from connectors.discovery import (
     SchemaDiscoveryTimeoutError,
 )
 from connectors.snowflake import _discovery_queries as queries
+from connectors.snowflake import _discovery_commands as commands
 from connectors.snowflake.connector import SnowflakeConnector
 from models.connection_profile import ConnectionProfile
 from models.discovery import CoverageStatus, DatabaseObjectType, ObjectPersistence
@@ -59,14 +60,24 @@ class DriverFailure(Exception):
         self.raw_msg = marker
         self.sqlstate = sqlstate
         self.errno = errno
-        self.sfqid = marker
+        self._sfqid = marker
+
+    @property
+    def sfqid(self):
+        raise AssertionError("Canonical discovery must not access query IDs.")
+
+
+class CursorResult:
+    def __init__(self, columns: list[str], rows: list[Any]):
+        self.columns = columns
+        self.rows = rows
 
 
 class FakeCursor:
     def __init__(self, connection: "FakeConnection"):
         self.connection = connection
         self.description: list[tuple[str]] | None = None
-        self._raw_rows: list[tuple[Any, ...]] = []
+        self._raw_rows: list[Any] = []
         self.closed = False
 
     def execute(
@@ -88,10 +99,14 @@ class FakeCursor:
             ):
                 self.connection.transaction_poisoned = True
             raise response
-        rows = list(response)
-        columns = list(rows[0]) if rows else []
-        self.description = [(name,) for name in columns]
-        self._raw_rows = [tuple(row.get(name) for name in columns) for row in rows]
+        if isinstance(response, CursorResult):
+            self.description = [(name,) for name in response.columns]
+            self._raw_rows = list(response.rows)
+        else:
+            rows = list(response)
+            columns = list(rows[0]) if rows else []
+            self.description = [(name,) for name in columns]
+            self._raw_rows = [tuple(row.get(name) for name in columns) for row in rows]
 
     def fetchall(self) -> list[tuple[Any, ...]]:
         return list(self._raw_rows)
@@ -120,11 +135,23 @@ class FakeConnection:
         self.transaction_poisoned = False
 
     def response_for(self, query: str, parameters: tuple[Any, ...]) -> Any:
-        default = (
-            [{"current_database": self.current_database}]
-            if query == queries._CURRENT_DATABASE_QUERY
-            else []
-        )
+        if query == queries._CURRENT_DATABASE_QUERY:
+            default: Any = [{"current_database": self.current_database}]
+        elif query.startswith(commands._SHOW_PRIMARY_KEYS_PREFIX):
+            default = CursorResult(
+                [
+                    "database_name",
+                    "schema_name",
+                    "table_name",
+                    "constraint_name",
+                    "column_name",
+                    "key_sequence",
+                    "comment",
+                ],
+                [],
+            )
+        else:
+            default = []
         response = self.responses.get(query, default)
         return response(parameters) if callable(response) else response
 
@@ -297,6 +324,40 @@ def _check_constraint_row(**overrides: Any) -> dict[str, Any]:
     return row
 
 
+def _show_primary_key_row(**overrides: Any) -> dict[str, Any]:
+    row = {
+        "database_name": "App DB",
+        "schema_name": "Mixed Case",
+        "table_name": "Orders",
+        "constraint_name": "Orders PK",
+        "column_name": "Order Id",
+        "key_sequence": 1,
+        "comment": "key comment",
+    }
+    row.update(overrides)
+    return row
+
+
+def _show_primary_keys_result(
+    rows: list[dict[str, Any]] | None = None,
+    *,
+    columns: list[str] | None = None,
+) -> CursorResult:
+    selected = columns or [
+        "database_name",
+        "schema_name",
+        "table_name",
+        "constraint_name",
+        "column_name",
+        "key_sequence",
+        "comment",
+    ]
+    return CursorResult(
+        selected,
+        [tuple(row.get(name.casefold()) for name in selected) for row in (rows or [])],
+    )
+
+
 def _stage_3b_responses(**overrides: Any) -> dict[str, Any]:
     responses: dict[str, Any] = {
         queries._TABLE_METADATA_QUERY: [_table_metadata_row()],
@@ -307,6 +368,14 @@ def _stage_3b_responses(**overrides: Any) -> dict[str, Any]:
     }
     responses.update(overrides)
     return responses
+
+
+def _show_command(
+    database: str = "App DB",
+    schema: str = "Mixed Case",
+    table: str = "Orders",
+) -> str:
+    return commands._show_primary_keys_command(database, schema, table)
 
 
 def test_stage_3b_signatures_are_exact_and_protocol_conformance_is_complete():
@@ -825,7 +894,7 @@ def test_get_table_metadata_returns_sanitized_metadata_with_partial_constraint_h
     assert "UNIQUE_CONSTRAINT_MEMBERSHIP_UNAVAILABLE" in metadata.coverage.warnings
     assert "FOREIGN_KEY_MEMBERSHIP_UNAVAILABLE" in metadata.coverage.warnings
     assert connection.closed
-    assert connection.cursor_count == connection.closed_cursors == 6
+    assert connection.cursor_count == connection.closed_cursors == 7
     assert connection.commit_count == connection.rollback_count == 0
 
 
@@ -890,8 +959,8 @@ def test_get_table_metadata_preserves_exact_database_schema_and_table_as_paramet
         (_table_metadata_row(), None, DatabaseObjectType.TABLE, CoverageStatus.COMPLETE, CoverageStatus.NOT_APPLICABLE),
         (_table_metadata_row(table_type="VIEW", estimated_row_count=None), [{"view_definition": "SELECT 1", "is_secure": False}], DatabaseObjectType.VIEW, CoverageStatus.NOT_APPLICABLE, CoverageStatus.COMPLETE),
         (_table_metadata_row(table_type="MATERIALIZED VIEW", estimated_row_count=2), None, DatabaseObjectType.MATERIALIZED_VIEW, CoverageStatus.NOT_APPLICABLE, CoverageStatus.UNAVAILABLE),
-        (_table_metadata_row(table_type="EXTERNAL TABLE"), None, DatabaseObjectType.EXTERNAL_TABLE, CoverageStatus.NOT_APPLICABLE, CoverageStatus.NOT_APPLICABLE),
-        (_table_metadata_row(is_dynamic=True), None, DatabaseObjectType.DYNAMIC_TABLE, CoverageStatus.UNAVAILABLE, CoverageStatus.NOT_APPLICABLE),
+        (_table_metadata_row(table_type="EXTERNAL TABLE"), None, DatabaseObjectType.EXTERNAL_TABLE, CoverageStatus.COMPLETE, CoverageStatus.NOT_APPLICABLE),
+        (_table_metadata_row(is_dynamic=True), None, DatabaseObjectType.DYNAMIC_TABLE, CoverageStatus.COMPLETE, CoverageStatus.NOT_APPLICABLE),
     ],
 )
 def test_get_table_metadata_covers_each_supported_object_class(
@@ -916,9 +985,7 @@ def test_get_table_metadata_covers_each_supported_object_class(
     assert metadata.coverage.view_definition is expected_view
     if expected_type is DatabaseObjectType.EXTERNAL_TABLE:
         assert metadata.coverage.clustering is CoverageStatus.NOT_APPLICABLE
-    if expected_type is DatabaseObjectType.DYNAMIC_TABLE:
-        assert "DYNAMIC_TABLE_KEYS_UNAVAILABLE" in metadata.coverage.warnings
-        assert queries._KEY_CONSTRAINTS_QUERY not in [item[0] for item in connection.executions]
+        assert queries._KEY_CONSTRAINTS_QUERY in [item[0] for item in connection.executions]
 
 
 @pytest.mark.parametrize(
@@ -1334,3 +1401,249 @@ def test_every_snowflake_discovery_query_is_one_fixed_read_only_select():
     assert "CONSTRAINT_CATALOG = %s" in queries._CHECK_CONSTRAINTS_QUERY
     assert "CONSTRAINT_SCHEMA = %s" in queries._CHECK_CONSTRAINTS_QUERY
     assert "CONSTRAINT_TABLE = %s" in queries._CHECK_CONSTRAINTS_QUERY
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("plain", '"plain"'),
+        ("schema.with.dot", '"schema.with.dot"'),
+        ('embedded"quote', '"embedded""quote"'),
+        ('x"; DROP TABLE y; --', '"x""; DROP TABLE y; --"'),
+        ("/*comment*/", '"/*comment*/"'),
+        ("SELECT", '"SELECT"'),
+        ("雪", '"雪"'),
+        (" leading and trailing ", '" leading and trailing "'),
+        ("db.schema.table", '"db.schema.table"'),
+        ("IDENTIFIER('other')", '"IDENTIFIER(\'other\')"'),
+    ],
+)
+def test_primary_key_identifier_component_serializer_preserves_and_quotes(value, expected):
+    assert commands._quote_identifier_component(value) == expected
+
+
+@pytest.mark.parametrize("value", ["", "bad\x00name", None, True, False, 1, Decimal("1")])
+def test_primary_key_identifier_component_serializer_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="Invalid Snowflake discovery identifier"):
+        commands._quote_identifier_component(value)
+
+
+def test_primary_key_command_is_exactly_three_quoted_components_and_has_no_extra_clause():
+    values = [" DB ", "schema.with.dot", 'x"; DROP TABLE y; --']
+    original = deepcopy(values)
+    command = commands._show_primary_keys_command(*values)
+    assert command == 'SHOW PRIMARY KEYS IN TABLE " DB "."schema.with.dot"."x""; DROP TABLE y; --"'
+    assert command.startswith(commands._SHOW_PRIMARY_KEYS_PREFIX)
+    assert not command.endswith(";")
+    assert values == original
+
+
+def test_primary_key_header_absence_is_complete_and_skips_show():
+    connection = FakeConnection(_stage_3b_responses())
+    metadata = FakeSnowflakeConnector(connection).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None
+    assert metadata.primary_key is None
+    assert metadata.coverage.primary_key is CoverageStatus.COMPLETE
+    assert not any(query.startswith(commands._SHOW_PRIMARY_KEYS_PREFIX) for query, _, _ in connection.executions)
+
+
+def test_show_primary_keys_maps_shuffled_case_insensitive_description_and_preserves_header():
+    columns = ["KEY_SEQUENCE", "COLUMN_NAME", "CONSTRAINT_NAME", "TABLE_NAME", "SCHEMA_NAME", "DATABASE_NAME", "COMMENT"]
+    rows = [
+        _show_primary_key_row(column_name="Second", key_sequence="+2"),
+        _show_primary_key_row(column_name="Order Id", key_sequence=Decimal("1")),
+    ]
+    responses = _stage_3b_responses(**{
+        queries._COLUMNS_QUERY: [_column_row(), _column_row(column_name="Second", ordinal_position=2, is_identity=False)],
+        queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()],
+        _show_command(): _show_primary_keys_result(rows, columns=columns),
+    })
+    connection = FakeConnection(responses)
+    metadata = FakeSnowflakeConnector(connection).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None and metadata.primary_key is not None
+    assert metadata.primary_key.columns == ("Order Id", "Second")
+    assert metadata.primary_key.is_enforced is False
+    assert metadata.primary_key.is_rely is True
+    assert metadata.primary_key.is_deferrable is False
+    assert metadata.primary_key.initially_deferred is False
+    assert metadata.primary_key.comment == "key comment"
+    assert metadata.coverage.primary_key is CoverageStatus.COMPLETE
+    show_execution = next(item for item in connection.executions if item[0].startswith(commands._SHOW_PRIMARY_KEYS_PREFIX))
+    assert show_execution == (_show_command(), (), 17)
+    assert connection.cursor_count == connection.closed_cursors
+
+
+def test_show_primary_keys_accepts_mapping_rows_without_retaining_unapproved_fields():
+    row = _show_primary_key_row()
+    row["query_id"] = "secret"
+    responses = _stage_3b_responses(**{
+        queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()],
+        _show_command(): CursorResult(list(row), [deepcopy(row)]),
+    })
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None and metadata.primary_key is not None
+    assert metadata.primary_key.columns == ("Order Id",)
+    assert "query_id" not in metadata.primary_key.vendor_metadata
+
+
+@pytest.mark.parametrize("result", [
+    CursorResult(["database_name"], []),
+    CursorResult(["database_name", "DATABASE_NAME", "schema_name", "table_name", "constraint_name", "column_name", "key_sequence"], []),
+    CursorResult(["database_name", "schema_name", "table_name", "constraint_name", "column_name", "key_sequence"], [("App DB", "Mixed Case")]),
+    CursorResult(["database_name", "schema_name", "table_name", "constraint_name", "column_name", "key_sequence"], [("App DB", "Mixed Case", "Orders", "Orders PK", None, 1)]),
+])
+def test_malformed_show_description_or_rows_degrade_all_membership(result):
+    responses = _stage_3b_responses(**{queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()], _show_command(): result})
+    connection = FakeConnection(responses)
+    metadata = FakeSnowflakeConnector(connection).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None and metadata.primary_key is not None
+    assert metadata.primary_key.columns == ()
+    assert metadata.coverage.primary_key is CoverageStatus.PARTIAL
+    assert "PRIMARY_KEY_MEMBERSHIP_PARTIAL" in metadata.coverage.warnings
+    assert connection.cursor_count == connection.closed_cursors
+
+
+@pytest.mark.parametrize("sequence", [
+    0, -1, "0", "-1", 1.0, Decimal("1.5"), Decimal("NaN"), Decimal("Infinity"),
+    True, " 1", "1 ", "1e3", "1abc", "",
+])
+def test_invalid_primary_key_sequences_are_rejected_without_shortening(sequence):
+    rows = [_show_primary_key_row(column_name="Order Id", key_sequence=1), _show_primary_key_row(column_name="Second", key_sequence=sequence)]
+    responses = _stage_3b_responses(**{
+        queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()],
+        _show_command(): _show_primary_keys_result(rows),
+    })
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None and metadata.primary_key is not None
+    assert metadata.primary_key.columns == ()
+    assert metadata.coverage.primary_key is CoverageStatus.PARTIAL
+
+
+@pytest.mark.parametrize("rows", [
+    [_show_primary_key_row(key_sequence=2)],
+    [_show_primary_key_row(), _show_primary_key_row()],
+    [_show_primary_key_row(column_name="A", key_sequence=1), _show_primary_key_row(column_name="B", key_sequence=1)],
+    [_show_primary_key_row(column_name="A", key_sequence=1), _show_primary_key_row(column_name="A", key_sequence=2)],
+])
+def test_primary_key_sequence_gaps_duplicates_and_conflicts_are_all_or_nothing(rows):
+    responses = _stage_3b_responses(**{queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()], _show_command(): _show_primary_keys_result(rows)})
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None and metadata.primary_key is not None
+    assert metadata.primary_key.columns == ()
+    assert "PRIMARY_KEY_MEMBERSHIP_PARTIAL" in metadata.coverage.warnings
+
+
+@pytest.mark.parametrize("override", [
+    {"database_name": "Other DB"}, {"schema_name": "Other Schema"},
+    {"table_name": "Other Table"}, {"constraint_name": "Other PK"},
+])
+def test_unmatched_show_membership_never_creates_a_phantom_constraint(override):
+    responses = _stage_3b_responses(**{
+        queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()],
+        _show_command(): _show_primary_keys_result([_show_primary_key_row(**override)]),
+    })
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None and metadata.primary_key is not None
+    assert metadata.primary_key.name == "Orders PK"
+    assert metadata.primary_key.columns == ()
+    assert "PRIMARY_KEY_MEMBERSHIP_UNMATCHED" in metadata.coverage.warnings
+
+
+def test_show_comment_conflict_retains_header_and_reports_fixed_temporal_warning():
+    responses = _stage_3b_responses(**{
+        queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()],
+        _show_command(): _show_primary_keys_result([_show_primary_key_row(comment="concurrent comment")]),
+    })
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None and metadata.primary_key is not None
+    assert metadata.primary_key.columns == ()
+    assert metadata.primary_key.comment == "key comment"
+    assert "PRIMARY_KEY_MEMBERSHIP_CONFLICT" in metadata.coverage.warnings
+
+
+def test_complete_columns_validate_membership_but_partial_column_evidence_does_not_reject_it():
+    show = _show_primary_keys_result([_show_primary_key_row(column_name="Not Visible")])
+    complete_responses = _stage_3b_responses(**{queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()], _show_command(): show})
+    complete = FakeSnowflakeConnector(FakeConnection(complete_responses)).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert complete is not None and complete.primary_key is not None
+    assert complete.primary_key.columns == ()
+    assert complete.coverage.primary_key is CoverageStatus.PARTIAL
+
+    partial_responses = _stage_3b_responses(**{
+        queries._COLUMNS_QUERY: [_column_row(ordinal_position="malformed")],
+        queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()], _show_command(): show,
+    })
+    partial = FakeSnowflakeConnector(FakeConnection(partial_responses)).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert partial is not None and partial.primary_key is not None
+    assert partial.primary_key.columns == ("Not Visible",)
+    assert partial.coverage.columns is CoverageStatus.PARTIAL
+    assert partial.coverage.primary_key is CoverageStatus.COMPLETE
+
+
+def test_show_permission_denial_is_partial_and_later_component_query_succeeds():
+    responses = _stage_3b_responses(**{
+        queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()],
+        _show_command(): DriverFailure("secret identifier", sqlstate="42501"),
+        queries._CHECK_CONSTRAINTS_QUERY: [_check_constraint_row()],
+    })
+    connection = FakeConnection(responses)
+    metadata = FakeSnowflakeConnector(connection).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None
+    assert metadata.coverage.primary_key is CoverageStatus.PARTIAL
+    assert "PRIMARY_KEY_MEMBERSHIP_UNAVAILABLE" in metadata.coverage.warnings
+    executed = [query for query, _, _ in connection.executions]
+    assert executed.index(queries._CHECK_CONSTRAINTS_QUERY) > executed.index(_show_command())
+    assert connection.autocommit is True
+    assert connection.commit_count == connection.rollback_count == 0
+    assert connection.cursor_count == connection.closed_cursors
+    assert connection.closed
+
+
+@pytest.mark.parametrize(("error", "expected"), [
+    (DriverFailure("secret timeout", sqlstate="57014"), SchemaDiscoveryTimeoutError),
+    (DriverFailure("secret connection", sqlstate="08001"), SchemaDiscoveryConnectionError),
+    (DriverFailure("secret unexpected", sqlstate="XX000"), SchemaDiscoveryError),
+])
+def test_show_failures_are_fatal_redacted_and_close_every_resource(error, expected):
+    responses = _stage_3b_responses(**{queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()], _show_command(): error})
+    connection = FakeConnection(responses)
+    with pytest.raises(expected) as caught:
+        FakeSnowflakeConnector(connection).get_table_metadata(schema="Mixed Case", table="Orders")
+    message = str(caught.value)
+    assert "secret" not in message and "Orders" not in message and "SHOW" not in message
+    assert connection.cursor_count == connection.closed_cursors
+    assert connection.closed
+
+
+@pytest.mark.parametrize("base_row", [
+    _table_metadata_row(), _table_metadata_row(is_transient=True),
+    _table_metadata_row(is_temporary=True), _table_metadata_row(is_hybrid=True),
+    _table_metadata_row(table_type="EXTERNAL TABLE"), _table_metadata_row(is_iceberg=True),
+    _table_metadata_row(is_dynamic=True),
+])
+def test_primary_key_membership_is_applicable_to_supported_table_classes(base_row):
+    responses = _stage_3b_responses(**{
+        queries._TABLE_METADATA_QUERY: [base_row], queries._KEY_CONSTRAINTS_QUERY: [_key_constraint_row()],
+        _show_command(): _show_primary_keys_result([_show_primary_key_row()]),
+    })
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None and metadata.primary_key is not None
+    assert metadata.primary_key.columns == ("Order Id",)
+    assert metadata.coverage.primary_key is CoverageStatus.COMPLETE
+
+
+def test_unique_and_foreign_key_membership_remain_header_only_in_stage_3c_1():
+    responses = _stage_3b_responses(**{
+        queries._KEY_CONSTRAINTS_QUERY: [
+            _key_constraint_row(), _key_constraint_row(constraint_name="Orders UQ", constraint_type="UNIQUE")
+        ],
+        queries._FOREIGN_KEYS_QUERY: [_foreign_key_row()],
+        _show_command(): _show_primary_keys_result([_show_primary_key_row()]),
+    })
+    metadata = FakeSnowflakeConnector(FakeConnection(responses)).get_table_metadata(schema="Mixed Case", table="Orders")
+    assert metadata is not None
+    assert metadata.primary_key is not None and metadata.primary_key.columns == ("Order Id",)
+    assert metadata.unique_constraints[0].columns == ()
+    assert metadata.foreign_keys[0].local_columns == ()
+    assert metadata.coverage.unique_constraints is CoverageStatus.PARTIAL
+    assert metadata.coverage.foreign_keys is CoverageStatus.PARTIAL
