@@ -21,12 +21,16 @@ def get_profile_resolver() -> Callable:
 
 
 def get_schema_discovery_service() -> Callable:
-    """Return the existing connector factory used to obtain discovery protocols."""
+    """Return a lazy resolver backed by the existing profile-bound service cache."""
 
+    return _resolve_profile_discovery_connector
+
+
+def _resolve_profile_discovery_connector(profile_id: str):
     _prepare_project_imports()
-    from connectors.factory import ConnectorFactory
+    from services.query_service import get_query_service
 
-    return ConnectorFactory.create_for_profile
+    return get_query_service(profile_id).connector
 
 
 def get_schema_mapping_service():
@@ -48,6 +52,12 @@ def get_validation_execution_service():
     from services.validation_execution import MigrationValidationExecutionService
 
     return MigrationValidationExecutionService()
+
+
+def get_validation_execution_service_factory() -> Callable:
+    """Delay importing the execution orchestrator until approval is confirmed."""
+
+    return get_validation_execution_service
 
 
 def get_transformation_compiler():
@@ -79,6 +89,7 @@ REQUIRED_DEPENDENCY_HOOKS = (
     get_transformation_compiler,
     get_validation_compiler,
     get_validation_execution_service,
+    get_validation_execution_service_factory,
     get_query_service_factory,
 )
 

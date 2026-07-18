@@ -13,9 +13,7 @@ class ApiSchema(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         frozen=True,
-        strict=True,
         ser_json_temporal="iso8601",
-        use_enum_values=True,
     )
 
 

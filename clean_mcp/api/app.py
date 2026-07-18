@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .config import ApiSettings
-from .dependencies import REQUIRED_DEPENDENCY_HOOKS
+from .dependencies import REQUIRED_DEPENDENCY_HOOKS, _prepare_project_imports
 from .errors import install_error_handlers
 from .middleware import install_middleware
 from .routes.health import router as health_router
@@ -51,6 +51,9 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     if settings is not None and not isinstance(settings, ApiSettings):
         raise TypeError("settings must be an ApiSettings value.")
     effective_settings = settings if settings is not None else ApiSettings()
+    _prepare_project_imports()
+    from .routes.migrations import router as migrations_router
+
     app = FastAPI(
         title="SchemaBridge API",
         version=__version__,
@@ -71,6 +74,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     install_error_handlers(app)
     install_middleware(app, max_body_bytes=effective_settings.max_request_body_bytes)
     app.include_router(health_router)
+    app.include_router(migrations_router)
     return app
 
 

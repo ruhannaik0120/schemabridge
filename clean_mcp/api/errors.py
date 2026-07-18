@@ -13,6 +13,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .schemas.common import ErrorResponse
 
 _ERROR_CODE_PATTERN = re.compile(r"[A-Z][A-Z0-9_]{1,63}\Z")
+_SENSITIVE_FIELD_NAMES = frozenset({
+    "access_token", "authorization", "connection_string", "connector_options", "credential",
+    "credentials", "password", "private_key", "query_text", "raw_sql", "refresh_token",
+    "secret", "sql_text", "token",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +73,8 @@ def _safe_validation_field(error: RequestValidationError) -> str | None:
         elif isinstance(part, str) and 1 <= len(part) <= 64 and all(
             character.isascii() and (character.isalnum() or character in "_-") for character in part
         ):
+            if part.casefold() in _SENSITIVE_FIELD_NAMES:
+                return None
             parts.append(part)
         else:
             return None
