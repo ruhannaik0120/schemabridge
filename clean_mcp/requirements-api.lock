@@ -1,0 +1,7 @@
+# Pinned runtime set for the PostgreSQL-to-Snowflake FastAPI workflow image.
+# Regenerate intentionally after testing dependency upgrades.
+fastapi==0.139.2
+psycopg[binary]==3.3.4
+python-dotenv==1.2.2
+snowflake-connector-python==4.7.1
+uvicorn[standard]==0.51.0

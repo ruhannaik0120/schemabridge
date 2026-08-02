@@ -9,7 +9,11 @@ from fastapi import FastAPI
 
 from . import __version__
 from .config import ApiSettings
-from .dependencies import REQUIRED_DEPENDENCY_HOOKS, _prepare_project_imports
+from .dependencies import (
+    REQUIRED_DEPENDENCY_HOOKS,
+    _prepare_project_imports,
+    build_workflow_repository,
+)
 from .errors import install_error_handlers
 from .middleware import install_middleware
 from .routes.health import router as health_router
@@ -32,18 +36,34 @@ def _cleanup_services() -> None:
                 continue
 
 
+def _cleanup_workflow_repository(app: FastAPI) -> None:
+    repository = getattr(app.state, "workflow_repository", None)
+    app.state.workflow_repository = None
+    close = getattr(repository, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            # Shutdown remains deterministic even after a persistence failure.
+            pass
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     app.state.ready = False
     try:
-        if not isinstance(getattr(app.state, "settings", None), ApiSettings):
+        settings = getattr(app.state, "settings", None)
+        if not isinstance(settings, ApiSettings):
             raise RuntimeError("API settings are unavailable or invalid.")
         if not all(callable(hook) for hook in REQUIRED_DEPENDENCY_HOOKS):
             raise RuntimeError("Required API dependency hooks are unavailable.")
+        if settings.control_plane.enabled:
+            app.state.workflow_repository = build_workflow_repository(settings.control_plane)
         app.state.ready = True
         yield
     finally:
         app.state.ready = False
+        _cleanup_workflow_repository(app)
         _cleanup_services()
 
 
@@ -53,6 +73,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     effective_settings = settings if settings is not None else ApiSettings()
     _prepare_project_imports()
     from .routes.migrations import router as migrations_router
+    from .routes.workflows import router as workflows_router
 
     app = FastAPI(
         title="SchemaBridge API",
@@ -71,10 +92,12 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     )
     app.state.ready = False
     app.state.settings = effective_settings
+    app.state.workflow_repository = None
     install_error_handlers(app)
     install_middleware(app, max_body_bytes=effective_settings.max_request_body_bytes)
     app.include_router(health_router)
     app.include_router(migrations_router)
+    app.include_router(workflows_router)
     return app
 
 

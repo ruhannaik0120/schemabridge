@@ -6,6 +6,7 @@ class ValidationApprovalRequiredError(ValueError): pass
 class ValidationExecutionError(ValueError): pass
 class MalformedValidationExecutionResultError(ValueError): pass
 class MigrationValidationExecutionService:
+ def __init__(self,query_service_factory=None):self.query_service_factory=query_service_factory
  def run(self,request):
   if not isinstance(request,MigrationValidationExecutionRequest) or request.explicitly_approved is not True: raise ValidationApprovalRequiredError('Validation approval is required.')
   source_sql,target_sql=compile_validation_sql(request.approved_mapping_plan,source_schema=request.source_schema,source_table=request.source_table,target_database=request.target_database,target_schema=request.target_schema,target_table=request.target_table)
@@ -15,10 +16,17 @@ class MigrationValidationExecutionService:
    normalized=generated.sql.lstrip().upper()
    if not normalized.startswith('SELECT') or any(word in normalized for word in ('INSERT ','UPDATE ','DELETE ','MERGE ','CREATE ','ALTER ','DROP ','BEGIN ','COMMIT ','ROLLBACK ')):
     raise ValidationExecutionError('Validation compilation failed.')
-  source=get_query_service(request.source_profile_id)
+  resolver=self.query_service_factory or get_query_service
+  try:
+   source=resolver(request.source_profile_id);context=getattr(source,'validation_execution_context',None);source_context=context(request.timeout_seconds) if callable(context) else None
+  except Exception:raise ValidationExecutionError('Validation source profile unavailable.') from None
+  if source_context is not None and (source_context.get('profile_id')!=request.source_profile_id or str(source_context.get('db_type','')).casefold() not in {'postgres','postgresql'}):raise ValidationExecutionError('Validation source connector is unsupported.')
   try: sr=source.execute_query(sql=source_sql.sql,parameters=source_sql.parameters,timeout_seconds=request.timeout_seconds)
   except Exception: raise ValidationExecutionError('Validation source execution failed.') from None
-  target=get_query_service(request.target_profile_id)
+  try:
+   target=resolver(request.target_profile_id);context=getattr(target,'validation_execution_context',None);target_context=context(request.timeout_seconds) if callable(context) else None
+  except Exception:raise ValidationExecutionError('Validation target profile unavailable.') from None
+  if target_context is not None and (target_context.get('profile_id')!=request.target_profile_id or str(target_context.get('db_type','')).casefold()!='snowflake'):raise ValidationExecutionError('Validation target connector is unsupported.')
   try: tr=target.execute_query(sql=target_sql.sql,parameters=target_sql.parameters,timeout_seconds=request.timeout_seconds)
   except Exception: raise ValidationExecutionError('Validation target execution failed.') from None
   def row(response,expected):

@@ -68,7 +68,22 @@ def test_optional_real_postgresql_contract_in_an_isolated_schema():
  admin.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(schema)))
  def connect():return psycopg.connect(dsn,autocommit=False,options=f'-c search_path={schema}')
  try:
-  assert ControlPlaneMigrationRunner(connect).run()==(1,)
+  runner=ControlPlaneMigrationRunner(connect)
+  assert runner.run()==(1,2,3) and runner.run()==(1,2,3)
+  inspection=connect()
+  try:
+   with inspection.cursor() as cursor:
+    cursor.execute("SELECT tablename FROM pg_tables WHERE schemaname=current_schema()")
+    tables={row[0] for row in cursor.fetchall()}
+    cursor.execute("SELECT indexname FROM pg_indexes WHERE schemaname=current_schema()")
+    indexes={row[0] for row in cursor.fetchall()}
+    cursor.execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE connamespace=current_schema()::regnamespace")
+    constraints=' '.join(row[0] for row in cursor.fetchall())
+   assert {'schemabridge_control_plane_migrations','migration_workflows','migration_workflow_artifacts','migration_audit_events','migration_idempotency','migration_execution_attempts','migration_validation_runs'}<=tables
+   assert {'ux_migration_execution_active_fingerprint','ux_migration_validation_terminal','ix_migration_audit_workflow_sequence'}<=indexes
+   for value in ('EXECUTION_RECOVERY_REQUIRED','VALIDATION_REVIEW_REQUIRED','EXECUTION_EVIDENCE','OUTCOME_UNCERTAIN'):
+    assert value in constraints
+  finally:inspection.close()
   repo=PostgreSQLWorkflowRepository(ControlPlaneConfig(dsn='[integration-test-dsn]'),connect=lambda _:connect())
   source=_table('source',_column('id'));target=_table('target',_column('id'))
   source_relation=WorkflowRelation(catalog_name=source.catalog_name,schema_name=source.schema_name,object_name=source.object_name,system=source.system)
@@ -76,6 +91,8 @@ def test_optional_real_postgresql_contract_in_an_isolated_schema():
   def create():return WorkflowPersistenceService(repo).create_workflow(display_name='Integration contract',source_profile_id='source',target_profile_id='target',source_relation=source_relation,target_relation=target_relation,idempotency_key='concurrent-create')
   with ThreadPoolExecutor(max_workers=2) as pool:created=list(pool.map(lambda _:create(),range(2)))
   assert created[0]==created[1]
+  reconstructed=PostgreSQLWorkflowRepository(ControlPlaneConfig(dsn='[integration-test-dsn]'),connect=lambda _:connect())
+  assert reconstructed.get_workflow(created[0].workflow_id)==created[0]
   service=WorkflowPersistenceService(repo);workflow,artifact=service.append_source_discovery(created[0].workflow_id,1,source,idempotency_key='append',actor_type=AuditActorType.SERVICE,actor_reference=None,request_id=None)
   discovered=service.transition_status(workflow.workflow_id,expected_version=2,new_status=MigrationWorkflowStatus.DISCOVERED,idempotency_key='discover')
   with pytest.raises(WorkflowConflictError):service.transition_status(workflow.workflow_id,expected_version=2,new_status=MigrationWorkflowStatus.DISCOVERED,idempotency_key='stale')

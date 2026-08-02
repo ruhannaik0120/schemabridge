@@ -45,6 +45,22 @@ def test_schema_migration_has_integrity_indexes_and_no_destructive_or_credential
  assert all(word not in upper for word in ('DROP ','TRUNCATE ','EXECUTE FORMAT'))
  assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))
 
+def test_execution_migration_extends_states_artifacts_and_attempt_integrity():
+ text=(_MIGRATIONS/'0002_workflow_execution.sql').read_text(encoding='utf-8');upper=text.upper()
+ assert 'CREATE TABLE IF NOT EXISTS MIGRATION_EXECUTION_ATTEMPTS' in upper
+ for value in ('EXECUTION_READY','EXECUTING','EXECUTED','EXECUTION_RECOVERY_REQUIRED','EXECUTION_EVIDENCE'):
+  assert value in upper
+ assert 'UX_MIGRATION_EXECUTION_ACTIVE_FINGERPRINT' in upper
+ assert 'REFERENCES MIGRATION_WORKFLOW_ARTIFACTS(WORKFLOW_ID, ARTIFACT_ID)' in upper
+ assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))
+
 def test_migration_filenames_and_checksum_are_deterministic():
- runner=ControlPlaneMigrationRunner(lambda:None);items=runner.discover();assert [x[0] for x in items]==[1]
+ runner=ControlPlaneMigrationRunner(lambda:None);items=runner.discover();assert [x[0] for x in items]==[1,2,3]
  assert items[0][3]==hashlib.sha256(items[0][2]).hexdigest()
+
+def test_validation_migration_adds_durable_claims_and_review_states():
+ text=(_MIGRATIONS/'0003_workflow_validation.sql').read_text(encoding='utf-8');upper=text.upper()
+ assert 'CREATE TABLE IF NOT EXISTS MIGRATION_VALIDATION_RUNS' in upper
+ assert 'VALIDATION_REVIEW_REQUIRED' in upper and 'VALIDATION_RECOVERY_REQUIRED' in upper
+ assert 'VALIDATE_WORKFLOW' in upper and 'DURATION_MS' in upper
+ assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))

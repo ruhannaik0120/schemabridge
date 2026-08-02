@@ -26,6 +26,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Compilation failed." }
     & $Python -m pytest -q
     if ($LASTEXITCODE -ne 0) { throw "Test suite failed." }
+    & $Python -m pip check
+    if ($LASTEXITCODE -ne 0) { throw "Dependency consistency check failed." }
+    & $Python -c "from api.app import create_app; schema=create_app().openapi(); assert '/api/v1/migrations/workflows/{workflow_id}/validate' in schema['paths']"
+    if ($LASTEXITCODE -ne 0) { throw "FastAPI import/OpenAPI check failed." }
     # The deterministic demo connector verifies startup without live credentials.
     $env:DB_TYPE = "demo"
     $env:DB_HOST = "demo-local"

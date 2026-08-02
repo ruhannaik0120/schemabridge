@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from models.discovery import TableMetadata
+from models.execution import MigrationExecutionEvidence
 from models.mapping import ApprovedTableMappingPlan,GeneratedTransformationSql,TableMappingPlan
 from models.validation import GeneratedValidationSql,MigrationValidationExecutionReport
 from models.workflow import WorkflowArtifactType
@@ -39,6 +40,7 @@ _EXPECTED={
  WorkflowArtifactType.SOURCE_DISCOVERY:TableMetadata,WorkflowArtifactType.TARGET_DISCOVERY:TableMetadata,
  WorkflowArtifactType.MAPPING_PLAN:TableMappingPlan,WorkflowArtifactType.APPROVED_MAPPING_PLAN:ApprovedTableMappingPlan,
  WorkflowArtifactType.TRANSFORMATION_PREVIEW:GeneratedTransformationSql,
+ WorkflowArtifactType.EXECUTION_EVIDENCE:MigrationExecutionEvidence,
  WorkflowArtifactType.VALIDATION_EXECUTION_REPORT:MigrationValidationExecutionReport,
 }
 def canonical_json_bytes(value:Any)->bytes:

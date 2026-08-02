@@ -14,6 +14,14 @@ _MIGRATIONS = Path(__file__).with_name("migrations")
 _NAME = re.compile(r"(\d{4})_[a-z0-9_]+\.sql\Z")
 
 
+def connect_control_plane(dsn: str):
+    """Open one transactional migration connection inside the DB boundary."""
+
+    import psycopg
+
+    return psycopg.connect(dsn, autocommit=False)
+
+
 class ControlPlaneMigrationRunner:
     def __init__(
         self,

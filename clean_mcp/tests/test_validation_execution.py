@@ -9,6 +9,7 @@ def _request(approved=True):
  return MigrationValidationExecutionRequest(source_profile_id='pg',target_profile_id='sf',approved_mapping_plan=_approved(),source_schema='public',source_table='people',target_database='db',target_schema='schema',target_table='people',timeout_seconds=9,explicitly_approved=approved)
 class FakeService:
  def __init__(self,name,metrics,events):self.name=name;self.metrics=metrics;self.events=events;self.calls=[]
+ def validation_execution_context(self,timeout):return {'profile_id':self.name,'db_type':'postgresql' if self.name=='pg' else 'snowflake','timeout_seconds':timeout}
  def execute_query(self,**kwargs):
   self.calls.append(kwargs);self.events.append(self.name)
   return SimpleNamespace(success=True,data={'columns':list(self.metrics),'rows':[tuple(self.metrics.values())]})
@@ -25,5 +26,5 @@ def test_profile_isolation_parameter_order_and_reconciliation(monkeypatch):
 def test_malformed_multiple_rows_is_not_a_validation_mismatch(monkeypatch):
  class Bad(FakeService):
   def execute_query(self,**kwargs):return SimpleNamespace(success=True,data={'columns':['row_count'],'rows':[(1,),(1,)]})
- monkeypatch.setattr('services.validation_execution.get_query_service',lambda _:Bad('x',{},[]))
+ monkeypatch.setattr('services.validation_execution.get_query_service',lambda key:Bad(key,{},[]))
  with pytest.raises(MalformedValidationExecutionResultError): MigrationValidationExecutionService().run(_request())

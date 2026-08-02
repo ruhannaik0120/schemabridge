@@ -141,6 +141,7 @@ class ConnectionProfile:
     connection_options: Mapping[str, Any] = field(default_factory=dict, repr=False)
     timeout_seconds: int = 30
     max_rows: int = 500
+    write_enabled: bool = False
 
     __hash__: ClassVar[None] = None
 
@@ -156,6 +157,8 @@ class ConnectionProfile:
             raise ConnectionProfileError("password must be a string.")
         if not isinstance(self.connection_options, Mapping):
             raise ConnectionProfileError("connection_options must be a mapping.")
+        if not isinstance(self.write_enabled, bool):
+            raise ConnectionProfileError("write_enabled must be a boolean.")
 
         timeout_seconds = _strict_int(self.timeout_seconds, field_name="timeout_seconds", default=30)
         max_rows = _strict_int(self.max_rows, field_name="max_rows", default=500)
@@ -232,6 +235,7 @@ class ConnectionProfile:
             "connection_options_present": bool(self.connection_options),
             "timeout_seconds": self.timeout_seconds,
             "max_rows": self.max_rows,
+            "write_enabled": self.write_enabled,
         }
 
     def connection_options_copy(self) -> dict[str, Any]:

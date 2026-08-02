@@ -98,6 +98,35 @@ class QueryService:
             return self._connection_profile.to_safe_dict()
         return Config.diagnostics()
 
+    def migration_execution_context(
+        self, timeout_seconds: int | None = None
+    ) -> dict[str, object]:
+        """Return the credential-free, profile-bound write execution context."""
+
+        if self._connection_profile is None:
+            raise ConfigError("Migration execution requires a named connection profile.")
+        return {
+            "profile_id": self._connection_profile.profile_id,
+            "db_type": self._connection_profile.db_type,
+            "database": self._connection_profile.database,
+            "timeout_seconds": self._effective_timeout(timeout_seconds),
+            "write_enabled": self._connection_profile.write_enabled,
+            "connector_type": self._connection_profile.db_type,
+        }
+
+    def validation_execution_context(
+        self, timeout_seconds: int | None = None
+    ) -> dict[str, object]:
+        """Return credential-free profile context for generated read-only validation."""
+
+        if self._connection_profile is None:
+            raise ConfigError("Validation execution requires a named connection profile.")
+        return {
+            "profile_id": self._connection_profile.profile_id,
+            "db_type": self._connection_profile.db_type,
+            "timeout_seconds": self._effective_timeout(timeout_seconds),
+        }
+
     def _safe_error_detail(self, error: Exception) -> str:
         """Prevent raw profile-bound connector errors from leaving the service."""
 

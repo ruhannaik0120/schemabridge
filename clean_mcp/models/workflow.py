@@ -14,11 +14,12 @@ from uuid import UUID
 
 class MigrationWorkflowStatus(str, Enum):
     DRAFT="DRAFT"; DISCOVERED="DISCOVERED"; MAPPING_PROPOSED="MAPPING_PROPOSED"; MAPPING_APPROVED="MAPPING_APPROVED"
-    VALIDATION_READY="VALIDATION_READY"; VALIDATING="VALIDATING"; VALIDATED="VALIDATED"; FAILED="FAILED"; CANCELLED="CANCELLED"
+    EXECUTION_READY="EXECUTION_READY"; EXECUTING="EXECUTING"; EXECUTED="EXECUTED"; EXECUTION_RECOVERY_REQUIRED="EXECUTION_RECOVERY_REQUIRED"
+    VALIDATION_READY="VALIDATION_READY"; VALIDATING="VALIDATING"; VALIDATED="VALIDATED"; VALIDATION_REVIEW_REQUIRED="VALIDATION_REVIEW_REQUIRED"; VALIDATION_RECOVERY_REQUIRED="VALIDATION_RECOVERY_REQUIRED"; FAILED="FAILED"; CANCELLED="CANCELLED"
 
 class WorkflowArtifactType(str, Enum):
     SOURCE_DISCOVERY="SOURCE_DISCOVERY"; TARGET_DISCOVERY="TARGET_DISCOVERY"; MAPPING_PLAN="MAPPING_PLAN"; APPROVED_MAPPING_PLAN="APPROVED_MAPPING_PLAN"
-    TRANSFORMATION_PREVIEW="TRANSFORMATION_PREVIEW"; VALIDATION_PREVIEW="VALIDATION_PREVIEW"; VALIDATION_EXECUTION_REPORT="VALIDATION_EXECUTION_REPORT"
+    TRANSFORMATION_PREVIEW="TRANSFORMATION_PREVIEW"; EXECUTION_EVIDENCE="EXECUTION_EVIDENCE"; VALIDATION_PREVIEW="VALIDATION_PREVIEW"; VALIDATION_EXECUTION_REPORT="VALIDATION_EXECUTION_REPORT"
 
 class MigrationAuditEventType(str, Enum):
     WORKFLOW_CREATED="WORKFLOW_CREATED"; STATUS_CHANGED="STATUS_CHANGED"; ARTIFACT_APPENDED="ARTIFACT_APPENDED"; WORKFLOW_FAILED="WORKFLOW_FAILED"; WORKFLOW_CANCELLED="WORKFLOW_CANCELLED"
@@ -118,8 +119,12 @@ ALLOWED_TRANSITIONS={
     MigrationWorkflowStatus.DRAFT:frozenset({MigrationWorkflowStatus.DISCOVERED,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
     MigrationWorkflowStatus.DISCOVERED:frozenset({MigrationWorkflowStatus.MAPPING_PROPOSED,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
     MigrationWorkflowStatus.MAPPING_PROPOSED:frozenset({MigrationWorkflowStatus.MAPPING_APPROVED,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
-    MigrationWorkflowStatus.MAPPING_APPROVED:frozenset({MigrationWorkflowStatus.VALIDATION_READY,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
+    MigrationWorkflowStatus.MAPPING_APPROVED:frozenset({MigrationWorkflowStatus.EXECUTION_READY,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
+    MigrationWorkflowStatus.EXECUTION_READY:frozenset({MigrationWorkflowStatus.EXECUTING,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
+    MigrationWorkflowStatus.EXECUTING:frozenset({MigrationWorkflowStatus.EXECUTED,MigrationWorkflowStatus.EXECUTION_READY,MigrationWorkflowStatus.EXECUTION_RECOVERY_REQUIRED}),
+    MigrationWorkflowStatus.EXECUTED:frozenset({MigrationWorkflowStatus.VALIDATION_READY,MigrationWorkflowStatus.VALIDATING,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
+    MigrationWorkflowStatus.EXECUTION_RECOVERY_REQUIRED:frozenset({MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
     MigrationWorkflowStatus.VALIDATION_READY:frozenset({MigrationWorkflowStatus.VALIDATING,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
-    MigrationWorkflowStatus.VALIDATING:frozenset({MigrationWorkflowStatus.VALIDATED,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
-    MigrationWorkflowStatus.VALIDATED:frozenset(),MigrationWorkflowStatus.FAILED:frozenset(),MigrationWorkflowStatus.CANCELLED:frozenset(),
+    MigrationWorkflowStatus.VALIDATING:frozenset({MigrationWorkflowStatus.VALIDATED,MigrationWorkflowStatus.VALIDATION_REVIEW_REQUIRED,MigrationWorkflowStatus.VALIDATION_RECOVERY_REQUIRED,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
+    MigrationWorkflowStatus.VALIDATED:frozenset(),MigrationWorkflowStatus.VALIDATION_REVIEW_REQUIRED:frozenset(),MigrationWorkflowStatus.VALIDATION_RECOVERY_REQUIRED:frozenset({MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),MigrationWorkflowStatus.FAILED:frozenset(),MigrationWorkflowStatus.CANCELLED:frozenset(),
 }

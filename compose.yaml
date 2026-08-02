@@ -1,0 +1,62 @@
+name: schemabridge
+
+services:
+  control-plane:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${SCHEMABRIDGE_CONTROL_PLANE_DB:-schemabridge}
+      POSTGRES_USER: ${SCHEMABRIDGE_CONTROL_PLANE_USER:-schemabridge}
+      POSTGRES_PASSWORD: ${SCHEMABRIDGE_CONTROL_PLANE_PASSWORD:-local_only_change_me}
+    ports:
+      - "${SCHEMABRIDGE_CONTROL_PLANE_PORT:-55432}:5432"
+    volumes:
+      - schemabridge-control-plane:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SCHEMABRIDGE_CONTROL_PLANE_DSN: postgresql://${SCHEMABRIDGE_CONTROL_PLANE_USER:-schemabridge}:${SCHEMABRIDGE_CONTROL_PLANE_PASSWORD:-local_only_change_me}@control-plane:5432/${SCHEMABRIDGE_CONTROL_PLANE_DB:-schemabridge}
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    command: ["python", "/app/clean_mcp/scripts/migrate_control_plane.py"]
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SCHEMABRIDGE_CONTROL_PLANE_DSN: postgresql://${SCHEMABRIDGE_CONTROL_PLANE_USER:-schemabridge}:${SCHEMABRIDGE_CONTROL_PLANE_PASSWORD:-local_only_change_me}@control-plane:5432/${SCHEMABRIDGE_CONTROL_PLANE_DB:-schemabridge}
+      DB_TYPE: demo
+      DB_HOST: demo-local
+      DB_DATABASE: qa_demo
+      DB_ACTIVE_PROFILE: ${DB_ACTIVE_PROFILE:-demo-local}
+      DB_PROFILES_JSON: '${DB_PROFILES_JSON:-}'
+      DB_TIMEOUT_SECONDS: ${DB_TIMEOUT_SECONDS:-30}
+      DB_MAX_ROWS: ${DB_MAX_ROWS:-500}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "${SCHEMABRIDGE_API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 6
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+volumes:
+  schemabridge-control-plane:

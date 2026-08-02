@@ -1,4 +1,12 @@
-# MCP Database Execution Framework
+# SchemaBridge backend and MCP database framework
+
+The durable SchemaBridge FastAPI workflow now lives alongside the original MCP database framework in this directory. Start with the [repository overview](../README.md) for the PostgreSQL-to-Snowflake workflow, Docker Compose, migrations, Swagger, tests, and interview demo. The sections below document the lower-level reusable MCP and connector layer.
+
+FastAPI factory: `clean_mcp.api.app:create_app`
+
+Swagger after startup: <http://localhost:8000/docs>
+
+Control-plane migration command: `python clean_mcp/scripts/migrate_control_plane.py`
 
 Reusable, AI-client-agnostic MCP server for executing approved SQL commands through named database profiles. It supports SQL Server, PostgreSQL, MySQL, Snowflake, and an offline demo connector through one stable tool and response contract.
 
