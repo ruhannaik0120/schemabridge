@@ -359,6 +359,7 @@ class SQLServerConnector(DatabaseConnector):
         self,
         query: str,
         *,
+        parameters: tuple[object, ...] | None = None,
         database: str | None = None,
         timeout_seconds: int | None = None,
         max_rows: int | None = None,
@@ -370,7 +371,7 @@ class SQLServerConnector(DatabaseConnector):
         limited_query = self._row_limit_sql(query, max_rows or profile.max_rows)
         with self._connection(database=target_database, timeout_seconds=timeout_seconds) as conn:
             cursor = conn.cursor()
-            cursor.execute(limited_query)
+            cursor.execute(limited_query, *parameters) if parameters else cursor.execute(limited_query)
             payload = self._fetch_rows(cursor, max_rows or profile.max_rows)
             rows_affected = cursor.rowcount if cursor.description is None else len(payload["rows"])
         return {

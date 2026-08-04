@@ -21,6 +21,7 @@ _PROFILE_FIELDS = frozenset(
         "connection_options",
         "timeout_seconds",
         "max_rows",
+        "write_enabled",
     }
 )
 
@@ -71,6 +72,7 @@ class ProfileRegistry:
                         connection_options=values.get("connection_options", {}),  # type: ignore[arg-type]
                         timeout_seconds=values.get("timeout_seconds", 30),  # type: ignore[arg-type]
                         max_rows=values.get("max_rows", 500),  # type: ignore[arg-type]
+                        write_enabled=values.get("write_enabled", False),  # type: ignore[arg-type]
                     )
                 else:
                     raise ProfileRegistryError("Every connection profile value must be a mapping.")
