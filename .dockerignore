@@ -14,10 +14,6 @@ venv
 !**/.env.example
 *.log
 logs
-reports
-outputs
-poc_runs
 tests
 clean_mcp/tests
 docs
-instructions

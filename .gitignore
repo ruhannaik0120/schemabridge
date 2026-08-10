@@ -18,20 +18,10 @@ htmlcov/
 !*.env.example
 !**/.env.example
 
-# Logs, generated reports, and runtime artifacts
+# Logs and runtime artifacts
 *.log
 logs/
 log/
-reports/
-output/
-outputs/
-*.xlsx
-*.xls
-
-# Generated E2E PoC run artifacts; keep only folder docs/placeholders
-poc_runs/*
-!poc_runs/.gitkeep
-!poc_runs/README.md
 
 # Database dumps and local data files
 *.db

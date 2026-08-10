@@ -39,7 +39,7 @@ The server lives in:
 clean_mcp/
 ```
 
-Its job is to let an AI client safely work with configured database systems through named profiles. It does not contain Jira workflow logic, QA ticket logic, report generation logic, or business-specific test orchestration. Those belong outside the MCP server.
+Its job is to let an AI client safely work with configured database systems through named profiles. It does not contain product-specific workflow orchestration or report generation. Those concerns belong outside the MCP server.
 
 The MCP server focuses only on database operations:
 
@@ -64,34 +64,20 @@ The currently supported connector types are:
 
 The server is designed so future connectors can be added without changing the MCP tool layer.
 
-## 3. How This MCP Fits Into The Broader QA Project
+## 3. How This MCP Fits Into SchemaBridge
 
-The broader QA project may involve Jira tickets, test plans, generated SQL, approval checkpoints, result files, reports, dashboards, or other workflow artifacts.
+This MCP server is a reusable database-access surface retained alongside the durable SchemaBridge FastAPI workflow. It exposes configured database connectors to MCP-compatible AI clients without owning SchemaBridge's workflow state or governance decisions.
 
-This MCP server is only the database execution layer inside that larger system.
-
-The broader workflow might look like this:
+Its direct request flow is:
 
 ```text
-Jira ticket / QA requirement
-        |
-        v
-AI agent creates a QA plan and proposes SQL
-        |
-        v
-Human approves the SQL and target database profile
-        |
-        v
 AI agent calls this MCP server
         |
         v
 MCP server switches profile, executes approved SQL, returns results
-        |
-        v
-AI agent evaluates and reports the QA result
 ```
 
-The MCP server does not know what Jira is. It does not know what a QA ticket is. It does not decide whether a test passed or failed. It only provides reliable, structured, safe database access.
+The MCP server does not decide or persist the durable SchemaBridge migration workflow. It provides reliable, structured, safe database access through its own tool boundary.
 
 That separation is intentional. It makes the MCP server reusable in other projects later.
 
@@ -166,7 +152,7 @@ clean_mcp/
 
 This is the MCP entry point.
 
-It creates the FastMCP server and registers the MCP tools. It should stay thin. It should not contain database connector logic, SQL parsing, business workflow logic, or Jira-specific behavior.
+It creates the FastMCP server and registers the MCP tools. It should stay thin. It should not contain database connector logic, SQL parsing, or product-specific workflow behavior.
 
 ### `config.py`
 
@@ -1370,20 +1356,17 @@ Check:
 
 ## 14. Delivery Notes
 
-This MCP server is the deliverable database execution layer.
+This MCP server is a reusable database execution surface.
 
 It is intentionally separate from:
 
-- Jira ticket retrieval
-- QA plan generation
-- approval logs
+- product-specific workflow orchestration
 - report generation
-- E2E run folders
 - project-specific workflow artifacts
 
 Those can use the MCP server, but they should not be built into it.
 
-The server is ready to be reused by a broader QA automation project because it provides:
+The server can be reused by MCP-compatible clients because it provides:
 
 - stable MCP tool names
 - named database profiles
