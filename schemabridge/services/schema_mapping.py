@@ -1,4 +1,9 @@
-"""Deterministic, explainable suggestions between two canonical tables."""
+"""Generate deterministic, explainable mappings between canonical tables.
+
+The service scores every source/target column pair with fixed name, type,
+dimension, nullability, and ordinal rules.  It performs no I/O and uses no AI;
+the same metadata always produces the same proposal and evidence codes.
+"""
 
 from __future__ import annotations
 
@@ -49,6 +54,8 @@ def _comparison_tokens(value: str) -> tuple[str, ...]:
 
 
 def _ordered_columns(columns: Iterable[ColumnMetadata]) -> tuple[ColumnMetadata, ...]:
+    """Provide stable source and target ordering independent of driver row order."""
+
     return tuple(
         sorted(
             columns,
@@ -105,6 +112,8 @@ def _evidence(code: str, explanation: str) -> MappingEvidence:
 
 @dataclass(frozen=True, slots=True)
 class _Candidate:
+    """Hold one scored source/target pair and its deterministic sort key."""
+
     source: ColumnMetadata
     target: ColumnMetadata
     confidence: float
@@ -116,6 +125,8 @@ class _Candidate:
 
 
 def _candidate(source: ColumnMetadata, target: ColumnMetadata) -> _Candidate:
+    """Score one column pair and retain the evidence behind the score."""
+
     evidence: list[MappingEvidence] = []
     if source.column_name == target.column_name:
         evidence.append(_evidence("EXACT_NATIVE_NAME", "Column names match exactly."))
@@ -159,6 +170,13 @@ class SchemaMappingService:
     """Build conservative one-to-one mapping suggestions without execution or AI."""
 
     def suggest(self, source: TableMetadata, target: TableMetadata) -> TableMappingPlan:
+        """Return a one-to-one proposal with suggestions and unresolved columns.
+
+        A suggestion is automatic only when it clears the confidence threshold,
+        is type-safe, and is an unambiguous mutual-best match.  All other source
+        columns remain visible for human review rather than being guessed.
+        """
+
         if not isinstance(source, TableMetadata) or not isinstance(target, TableMetadata):
             raise TypeError("source and target must be TableMetadata values.")
         source_columns = _ordered_columns(source.columns)
@@ -176,6 +194,9 @@ class SchemaMappingService:
 
         assigned: dict[str, _Candidate] = {}
         ambiguous: set[str] = set()
+        # Mutual-best matching prevents two plausible source columns from
+        # silently competing for the same target merely because one is visited
+        # first.  Close alternatives are deliberately sent to human review.
         for source_column in source_columns:
             options = by_source[source_column.column_name]
             if not options:
@@ -254,6 +275,8 @@ class SchemaMappingService:
                     evidence=(MappingEvidence(code="NO_VIABLE_CANDIDATE", explanation="No safe candidate was found."),),
                 ))
 
+        # Assigned targets drive the unmatched list; no second pass can reuse a
+        # target because only mutual-best candidates enter ``assigned``.
         assigned_targets = {item.target.column_name for item in assigned.values()}
         return TableMappingPlan(
             source_table=TableMappingIdentity(

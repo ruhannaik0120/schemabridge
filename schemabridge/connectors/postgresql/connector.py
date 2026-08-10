@@ -1,4 +1,10 @@
-"""PostgreSQL implementation of the database connector interface."""
+"""Provide profile-bound PostgreSQL access and canonical schema discovery.
+
+The connector owns psycopg configuration, operation-scoped connections,
+row-limit enforcement, fixed catalog queries, result normalization, rollback,
+and sanitized discovery failures.  Higher layers receive canonical metadata or
+neutral query results rather than driver-specific objects.
+"""
 
 from __future__ import annotations
 
@@ -56,7 +62,7 @@ _SUPPORTED_DISCOVERY_OBJECT_TYPES = {
 
 
 class PostgreSQLConnector(DatabaseConnector):
-    """Connector implementation for PostgreSQL via psycopg."""
+    """Implement bounded PostgreSQL operations through lazily imported psycopg."""
 
     profile_db_type = "postgresql"
 
@@ -145,6 +151,8 @@ class PostgreSQLConnector(DatabaseConnector):
         try:
             yield connection
         finally:
+            # Operation-scoped connections also end any transaction left open
+            # by a failing driver call; sessions are never shared by requests.
             connection.close()
 
     def test_connection(self, database: str | None = None, timeout_seconds: int | None = None) -> dict[str, Any]:
@@ -330,6 +338,8 @@ class PostgreSQLConnector(DatabaseConnector):
                 try:
                     yield connection
                 except BaseException:
+                    # Discovery is read-only, but psycopg still opens a
+                    # transaction.  Rollback guarantees no session state leaks.
                     with contextlib.suppress(Exception):
                         connection.rollback()
                     raise
@@ -354,6 +364,8 @@ class PostgreSQLConnector(DatabaseConnector):
             cursor.execute(query, parameters)
             return tuple(self._fetch_rows(cursor)["rows"])
         finally:
+            # Cursor cleanup is independent of connection rollback and must run
+            # when a fixed catalog query returns malformed data or raises.
             cursor.close()
 
     def _execute_optional_discovery_query(

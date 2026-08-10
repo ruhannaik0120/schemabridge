@@ -1,4 +1,10 @@
-"""Typed rehydration for canonical workflow artifacts used by orchestration."""
+"""Rehydrate immutable JSON artifacts into validated domain models.
+
+Workflow orchestrators never trust decoded dictionaries directly.  Each public
+codec verifies the artifact type, reconstructs enums and nested immutable
+models, and converts malformed or mismatched payloads into one safe persistence
+error.  This is the typed boundary between stored evidence and domain logic.
+"""
 
 from __future__ import annotations
 
@@ -56,12 +62,16 @@ from schemabridge.persistence.errors import WorkflowArtifactValidationError
 
 
 def _mapping(value: object) -> Mapping[str, object]:
+    """Require a JSON object at a nested artifact boundary."""
+
     if not isinstance(value, Mapping):
         raise WorkflowArtifactValidationError()
     return value
 
 
 def _tuple(value: object) -> tuple:
+    """Convert a JSON array to the immutable collection expected by models."""
+
     if not isinstance(value, list):
         raise WorkflowArtifactValidationError()
     return tuple(value)
@@ -72,6 +82,8 @@ def _column(value: object) -> ColumnMetadata:
     data["canonical_type"] = CanonicalType(data["canonical_type"])
     if data.get("element_canonical_type") is not None:
         data["element_canonical_type"] = CanonicalType(data["element_canonical_type"])
+    # Vendor metadata is deliberately excluded from durable canonical artifacts;
+    # rehydration cannot reintroduce transient driver-specific values.
     data["vendor_metadata"] = {}
     return ColumnMetadata(**data)
 
@@ -108,6 +120,8 @@ def _coverage(value: object) -> DiscoveryCoverage:
 
 
 def table_metadata_from_artifact(artifact: WorkflowArtifact) -> TableMetadata:
+    """Decode a source or target discovery artifact as canonical table metadata."""
+
     if artifact.artifact_type not in {
         WorkflowArtifactType.SOURCE_DISCOVERY,
         WorkflowArtifactType.TARGET_DISCOVERY,
@@ -155,6 +169,8 @@ def _suggestion(value: object) -> ColumnMappingSuggestion:
 
 
 def mapping_plan_from_artifact(artifact: WorkflowArtifact) -> TableMappingPlan:
+    """Decode and validate a deterministic mapping-proposal artifact."""
+
     if artifact.artifact_type is not WorkflowArtifactType.MAPPING_PLAN:
         raise WorkflowArtifactValidationError()
     try:
@@ -205,6 +221,8 @@ def _approval(value: object) -> ColumnMappingApproval:
 def approved_mapping_plan_from_artifact(
     artifact: WorkflowArtifact,
 ) -> ApprovedTableMappingPlan:
+    """Decode human decisions and transformations from an approval artifact."""
+
     if artifact.artifact_type is not WorkflowArtifactType.APPROVED_MAPPING_PLAN:
         raise WorkflowArtifactValidationError()
     try:
@@ -232,6 +250,8 @@ def approved_mapping_plan_from_artifact(
 def transformation_sql_from_artifact(
     artifact: WorkflowArtifact,
 ) -> GeneratedTransformationSql:
+    """Decode a persisted transformation preview and its bound parameters."""
+
     if artifact.artifact_type is not WorkflowArtifactType.TRANSFORMATION_PREVIEW:
         raise WorkflowArtifactValidationError()
     try:
@@ -257,6 +277,8 @@ def transformation_sql_from_artifact(
 def execution_evidence_from_artifact(
     artifact: WorkflowArtifact,
 ) -> MigrationExecutionEvidence:
+    """Decode terminal target-execution evidence with typed timestamps/statuses."""
+
     if artifact.artifact_type is not WorkflowArtifactType.EXECUTION_EVIDENCE:
         raise WorkflowArtifactValidationError()
     try:
@@ -299,6 +321,8 @@ def _validation_sql(value: object) -> GeneratedValidationSql:
 def validation_preview_from_artifact(
     artifact: WorkflowArtifact,
 ) -> tuple[GeneratedValidationSql, GeneratedValidationSql]:
+    """Decode the ordered PostgreSQL/Snowflake validation statement pair."""
+
     if artifact.artifact_type is not WorkflowArtifactType.VALIDATION_PREVIEW:
         raise WorkflowArtifactValidationError()
     try:
@@ -332,6 +356,8 @@ def _validation_report(value: object) -> MigrationValidationReport:
 def validation_execution_report_from_artifact(
     artifact: WorkflowArtifact,
 ) -> MigrationValidationExecutionReport:
+    """Decode paired execution summaries and their reconciled validation report."""
+
     if artifact.artifact_type is not WorkflowArtifactType.VALIDATION_EXECUTION_REPORT:
         raise WorkflowArtifactValidationError()
     try:

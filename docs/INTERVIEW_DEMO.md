@@ -49,13 +49,13 @@ Open `tests/test_workflow_end_to_end.py`. Explain the eight ordered artifacts, 1
 
 Describe three outcomes:
 
-- confirmed rollback returns to `EXECUTION_READY` for an explicit retry;
+- the orchestration contract can return a proven rollback to `EXECUTION_READY`, while the current production adapter conservatively treats caught target exceptions as uncertain;
 - data mismatch becomes `VALIDATION_REVIEW_REQUIRED` without calling it an execution failure;
 - uncertain execution or validation becomes a recovery-required state and is never automatically rerun.
 
 ### Minute 6–7: limitations
 
-State that no real Snowflake migration was run in this environment. Validation is aggregate-based. Authentication, frontend, background workers, AWS/PySpark, advanced profiling, and automatic uncertain-outcome resolution are not implemented.
+State that no real Snowflake migration was run in this environment. The current statement reads an already-available Snowflake staging relation; PostgreSQL extraction and staging load are not implemented. Validation is aggregate-based. Authentication, frontend, background workers, AWS/PySpark, advanced profiling, and automatic uncertain-outcome resolution are not implemented.
 
 ## Architecture talking points
 

@@ -1,4 +1,10 @@
-"""Approval-gated durable orchestration for one target migration execution."""
+"""Coordinate one approval-gated, durable target migration execution.
+
+The orchestrator verifies workflow state and immutable artifact lineage,
+recompiles the approved SQL, claims execution in the control plane, crosses the
+Snowflake boundary once, and records evidence.  Confirmed rollback is retryable;
+an outcome that cannot be proven moves the workflow into manual recovery.
+"""
 
 from __future__ import annotations
 
@@ -45,11 +51,15 @@ from schemabridge.services.workflow_persistence import WorkflowPersistenceServic
 
 
 def _now() -> datetime:
+    """Return a timezone-aware timestamp; injectable clocks keep tests stable."""
+
     return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True, slots=True)
 class WorkflowExecutionResult:
+    """Bundle the terminal workflow, attempt, artifact, and typed evidence."""
+
     workflow: MigrationWorkflow
     attempt: MigrationExecutionAttempt
     artifact: WorkflowArtifact
@@ -57,6 +67,8 @@ class WorkflowExecutionResult:
 
 
 class WorkflowExecutionOrchestrator:
+    """Enforce the approval and concurrency boundary around target writes."""
+
     def __init__(
         self,
         persistence: WorkflowPersistenceService,
@@ -66,6 +78,8 @@ class WorkflowExecutionOrchestrator:
         clock: Callable[[], datetime] = _now,
         uuid_factory: Callable[[], UUID] = uuid4,
     ) -> None:
+        """Bind persistence, pure compilation, remote execution, and test clocks."""
+
         self.persistence = persistence
         self.transformation_compiler = transformation_compiler
         self.execution_service = execution_service
@@ -80,6 +94,8 @@ class WorkflowExecutionOrchestrator:
         *,
         require_latest: bool,
     ) -> WorkflowArtifact:
+        """Load a referenced artifact and optionally require its latest version."""
+
         artifact = self.persistence.get_artifact(workflow_id, artifact_version)
         if artifact is None:
             raise WorkflowRequiredArtifactError()
@@ -96,6 +112,8 @@ class WorkflowExecutionOrchestrator:
         workflow_id: UUID,
         attempt: MigrationExecutionAttempt,
     ) -> WorkflowExecutionResult:
+        """Replay the externally visible outcome of a terminal attempt."""
+
         if attempt.status is MigrationExecutionAttemptStatus.FAILED_ROLLED_BACK:
             raise WorkflowExecutionConfirmedFailureError()
         if attempt.status is MigrationExecutionAttemptStatus.OUTCOME_UNCERTAIN:
@@ -125,6 +143,8 @@ class WorkflowExecutionOrchestrator:
         target_profile_id: str,
         timeout_seconds: int | None,
     ) -> str:
+        """Hash every execution input used to identify an exact replay."""
+
         return request_hash(
             "WORKFLOW_EXECUTE",
             {
@@ -149,10 +169,18 @@ class WorkflowExecutionOrchestrator:
         request_id: str | None,
         idempotency_key: str,
     ) -> WorkflowExecutionResult:
+        """Classify a remote result and durably complete its claimed attempt.
+
+        The persistence call records the terminal attempt, evidence artifact,
+        workflow transition, audit event, and idempotency result together.
+        """
+
         completed_at = self.clock()
         started_at = attempt.running_at
         if started_at is None:
             raise WorkflowExecutionOutcomeUncertainError()
+        # Only a proven commit or rollback permits a definitive terminal
+        # classification.  All other remote outcomes enter recovery quarantine.
         if result.disposition is TargetExecutionDisposition.SUCCEEDED:
             status = MigrationExecutionAttemptStatus.SUCCEEDED
             transaction = MigrationTransactionOutcome.COMMITTED
@@ -224,6 +252,13 @@ class WorkflowExecutionOrchestrator:
         actor_reference: str | None,
         request_id: str | None,
     ) -> WorkflowExecutionResult:
+        """Verify, claim, execute, and persist one approved transformation.
+
+        Exact idempotent replays return the recorded terminal outcome.  New
+        commands must reference the latest approved mapping and preview, match
+        the workflow's target profile, and acquire the durable execution claim.
+        """
+
         command_hash = self._command_hash(
             workflow_id,
             expected_version=expected_version,
@@ -232,6 +267,8 @@ class WorkflowExecutionOrchestrator:
             target_profile_id=target_profile_id,
             timeout_seconds=timeout_seconds,
         )
+        # Replay lookup precedes current-state checks because a successful first
+        # request has already advanced the workflow beyond EXECUTION_READY.
         replay = self.persistence.get_execution_attempt_by_command(
             workflow_id, idempotency_key, command_hash
         )
@@ -283,6 +320,9 @@ class WorkflowExecutionOrchestrator:
             raise WorkflowUnsafeGeneratedStatementError()
         if preview.approved_plan_version != approved.version:
             raise WorkflowStaleArtifactReferenceError()
+        # Recompile from the persisted approved mapping rather than trusting the
+        # stored SQL preview directly.  Equality proves that neither the SQL nor
+        # its bound parameters escaped the approval boundary.
         try:
             expected_preview = self.transformation_compiler.compile_insert_select(
                 approved,
@@ -325,6 +365,8 @@ class WorkflowExecutionOrchestrator:
             idempotency_key=idempotency_key,
             actor_reference=actor_reference,
         )
+        # Claim in the control plane before making the non-transactional remote
+        # call so concurrent requests cannot both start the same write.
         claimed_workflow, attempt, _ = self.persistence.claim_execution_attempt(
             workflow_id,
             expected_version,
@@ -354,6 +396,8 @@ class WorkflowExecutionOrchestrator:
             attempt.attempt_id, self.clock()
         )
         if not acquired:
+            # A timed-out RUNNING claim is not assumed failed: Snowflake may
+            # have committed after the caller lost contact, so retry is unsafe.
             if (
                 running.status is MigrationExecutionAttemptStatus.RUNNING
                 and running.running_at is not None

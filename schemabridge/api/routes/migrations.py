@@ -1,4 +1,10 @@
-"""Versioned production migration workflow routes."""
+"""Expose lower-level migration operations without durable workflow state.
+
+These endpoints translate strict API schemas into domain objects for discovery,
+mapping, approval, transformation preview, and validation.  Clients that need
+idempotency, immutable artifacts, audit history, or execution claims should use
+the durable routes in :mod:`schemabridge.api.routes.workflows` instead.
+"""
 
 from __future__ import annotations
 
@@ -58,6 +64,8 @@ _CLIENT_ERRORS = {
 
 
 def _error(status: int, code: str, message: str) -> ApiError:
+    """Build a stable public error without exposing a driver exception."""
+
     return ApiError(status, code, message)
 
 
@@ -73,6 +81,8 @@ async def discover(
     request: DiscoveryRequest,
     resolver: Annotated[Callable, Depends(get_schema_discovery_service)],
 ) -> TableMetadataSchema:
+    """Discover one table through a named profile and return canonical metadata."""
+
     try:
         connector = resolver(request.profile_id)
         metadata = connector.get_table_metadata(
@@ -81,6 +91,8 @@ async def discover(
             table=request.table_name,
         )
     except Exception as error:
+        # Dependency exceptions are inspected by type name so this API module
+        # remains importable without eagerly loading optional connector stacks.
         class_names = {item.__name__ for item in type(error).__mro__}
         if "UnknownProfileError" in class_names:
             raise _error(404, "PROFILE_NOT_FOUND", "The requested connection profile is unavailable.") from None
@@ -107,6 +119,8 @@ async def suggest_mappings(
     request: MappingSuggestionRequest,
     service=Depends(get_schema_mapping_service),
 ) -> TableMappingPlanSchema:
+    """Generate reproducible mapping suggestions from two metadata snapshots."""
+
     try:
         return plan_to_api(service.suggest(table_to_domain(request.source), table_to_domain(request.target)))
     except (TypeError, ValueError):
@@ -125,6 +139,8 @@ async def approve_mappings(
     request: MappingApprovalRequest,
     service=Depends(get_mapping_approval_service),
 ) -> ApprovedTableMappingPlanSchema:
+    """Apply explicit review decisions to a deterministic mapping proposal."""
+
     try:
         result = service.apply(
             plan_to_domain(request.plan),
@@ -149,6 +165,8 @@ async def preview_transformation(
     request: TransformationPreviewRequest,
     compiler=Depends(get_transformation_compiler),
 ) -> GeneratedTransformationSqlSchema:
+    """Compile approved mappings into a read-only or insert-select preview."""
+
     try:
         plan = approved_plan_to_domain(request.approved_plan)
     except (TypeError, ValueError):
@@ -185,6 +203,8 @@ async def preview_validation(
     request: ValidationPreviewRequest,
     compiler: Annotated[Callable, Depends(get_validation_compiler)],
 ) -> ValidationPreviewResponse:
+    """Generate paired, read-only aggregate checks for an approved plan."""
+
     try:
         plan = approved_plan_to_domain(request.approved_plan)
     except (TypeError, ValueError):
@@ -217,6 +237,8 @@ async def execute_validation(
     request: ValidationExecutionRequestSchema,
     service_factory: Annotated[Callable, Depends(get_validation_execution_service_factory)],
 ) -> ValidationExecutionResponse:
+    """Run an explicitly approved validation outside the durable state machine."""
+
     if request.explicitly_approved is not True:
         raise _error(400, "VALIDATION_APPROVAL_REQUIRED", "Explicit validation approval is required.")
     try:

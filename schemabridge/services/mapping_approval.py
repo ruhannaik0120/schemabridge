@@ -1,4 +1,10 @@
-"""Human-in-the-loop approval of deterministic mapping suggestions."""
+"""Apply human review to deterministic mapping suggestions.
+
+The service preserves proposal evidence while recording an explicit decision
+for every source column.  It rechecks table identity, type compatibility,
+transformation inputs, and target uniqueness so approval cannot silently widen
+the plan beyond the supplied discovery snapshots.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +26,8 @@ from schemabridge.services.schema_mapping import _type_compatibility
 
 
 def _identity(table: TableMetadata) -> TableMappingIdentity:
+    """Reduce discovered metadata to the identity embedded in mapping plans."""
+
     return TableMappingIdentity(
         catalog_name=table.catalog_name,
         schema_name=table.schema_name,
@@ -29,6 +37,8 @@ def _identity(table: TableMetadata) -> TableMappingIdentity:
 
 
 def _ordered_columns(columns: Iterable[ColumnMetadata]) -> tuple[ColumnMetadata, ...]:
+    """Apply a stable review order when connector metadata ordering varies."""
+
     return tuple(
         sorted(
             columns,
@@ -42,10 +52,10 @@ def _ordered_columns(columns: Iterable[ColumnMetadata]) -> tuple[ColumnMetadata,
 
 
 class MappingApprovalService:
-    """Turn a Stage 4A plan and explicit reviewer choices into an immutable plan."""
+    """Turn a proposal and explicit reviewer choices into an immutable plan."""
 
     def create_review_plan(self, plan: TableMappingPlan) -> ApprovedTableMappingPlan:
-        """Convert every suggestion to PENDING; this helper never auto-approves."""
+        """Convert every suggestion to ``PENDING`` without auto-approving it."""
         if not isinstance(plan, TableMappingPlan):
             raise TypeError("plan must be a TableMappingPlan.")
         approvals = tuple(
@@ -80,7 +90,14 @@ class MappingApprovalService:
         target: TableMetadata,
         decisions: tuple[MappingReviewDecision, ...],
     ) -> ApprovedTableMappingPlan:
-        """Apply explicit reviewer decisions without changing the Stage 4A plan."""
+        """Apply decisions while preserving the original proposal evidence.
+
+        Raises:
+            TypeError: If plans, metadata, or decisions have the wrong type.
+            ValueError: If identities disagree, a reference is unknown, a
+                risky mapping lacks an override, or a target would be reused.
+        """
+
         if not isinstance(plan, TableMappingPlan):
             raise TypeError("plan must be a TableMappingPlan.")
         if not isinstance(source, TableMetadata) or not isinstance(target, TableMetadata):
@@ -134,6 +151,9 @@ class MappingApprovalService:
                     source_column,
                     target_columns[selected_target],
                 )
+                # A normal approval is reserved for the safe path.  Explicit
+                # OVERRIDDEN status makes acceptance of incompatible or
+                # low-confidence evidence visible in the persisted artifact.
                 if (
                     status is MappingApprovalStatus.APPROVED
                     and compatibility is ColumnCompatibility.INCOMPATIBLE
@@ -173,6 +193,8 @@ class MappingApprovalService:
             if item.status in {MappingApprovalStatus.APPROVED, MappingApprovalStatus.OVERRIDDEN}
         )
         targets = tuple(item.target_column for item in approved)
+        # Duplicate targets make INSERT column ownership ambiguous and are
+        # rejected even when each individual decision is otherwise valid.
         if len(set(targets)) != len(targets):
             raise ValueError("approved mappings must not reuse a target column.")
         rejected = tuple(
@@ -197,6 +219,8 @@ class MappingApprovalService:
         expression: TransformationExpression,
         source_columns: dict[str, ColumnMetadata],
     ) -> None:
+        """Recursively ensure an approved expression reads known source columns."""
+
         if any(column not in source_columns for column in expression.source_columns):
             raise ValueError("transformation references an unknown source column.")
         for argument in expression.arguments:

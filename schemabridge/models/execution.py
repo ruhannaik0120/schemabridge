@@ -1,4 +1,10 @@
-"""Safe durable models for one workflow-scoped target execution attempt."""
+"""Define durable target-execution attempts and sanitized terminal evidence.
+
+Lifecycle validation prevents impossible combinations such as a succeeded
+attempt without completion evidence or an uncertain outcome without a failure
+category.  Credentials, SQL text, and driver exceptions are intentionally not
+part of these control-plane models.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +18,8 @@ from schemabridge.models.workflow import AuditActorType
 
 
 class MigrationExecutionAttemptStatus(str, Enum):
+    """Track the claim, running, and terminal lifecycle of one write attempt."""
+
     CLAIMED = "CLAIMED"
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
@@ -20,6 +28,8 @@ class MigrationExecutionAttemptStatus(str, Enum):
 
 
 class MigrationTransactionOutcome(str, Enum):
+    """Record only what is known about the remote transaction."""
+
     COMMITTED = "COMMITTED"
     ROLLED_BACK = "ROLLED_BACK"
     UNKNOWN = "UNKNOWN"
@@ -58,6 +68,8 @@ def _text(value: str, name: str, limit: int = 256) -> None:
 
 @dataclass(frozen=True, slots=True, kw_only=True, repr=False)
 class MigrationExecutionAttempt:
+    """Represent the durable concurrency claim and lifecycle of one execution."""
+
     attempt_id: UUID
     workflow_id: UUID
     approved_mapping_artifact_version: int
@@ -148,6 +160,8 @@ class MigrationExecutionAttempt:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MigrationExecutionEvidence:
+    """Record credential-free terminal evidence for exactly one statement."""
+
     attempt_id: UUID
     workflow_id: UUID
     status: MigrationExecutionAttemptStatus

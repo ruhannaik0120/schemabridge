@@ -1,4 +1,9 @@
-"""Immutable registry for explicitly named connection profiles."""
+"""Parse and resolve explicitly named, immutable connection profiles.
+
+Workflows persist only profile IDs.  At runtime this registry validates the
+operator-supplied ``DB_PROFILES_JSON`` document and resolves an ID to credentials
+without copying those secrets into workflow artifacts, audit events, or errors.
+"""
 
 from __future__ import annotations
 
@@ -36,11 +41,13 @@ class UnknownProfileError(ProfileRegistryError):
 
 @dataclass(frozen=True, slots=True, init=False)
 class ProfileRegistry:
-    """An immutable, non-global collection of connection profiles."""
+    """An immutable, case-insensitive collection of connection profiles."""
 
     _profiles: Mapping[str, ConnectionProfile] = field(repr=False)
 
     def __init__(self, profiles: Mapping[str, Mapping[str, Any] | ConnectionProfile]) -> None:
+        """Validate profile keys and deeply build/detach every profile value."""
+
         if not isinstance(profiles, Mapping):
             raise ProfileRegistryError("Connection profiles must be a mapping keyed by profile ID.")
 
@@ -112,6 +119,8 @@ class ProfileRegistry:
     def safe_profiles(self) -> list[dict[str, object]]:
         """Return deterministic, credential-free profile metadata."""
 
+        # Safe summaries expose only presence flags for host/user/password so
+        # diagnostic callers cannot recover credentials from the registry.
         return [self._profiles[key].to_safe_dict() for key in sorted(self._profiles)]
 
     def __len__(self) -> int:

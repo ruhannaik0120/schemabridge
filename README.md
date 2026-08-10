@@ -1,109 +1,74 @@
 # SchemaBridge
 
-SchemaBridge is a governed PostgreSQL-to-Snowflake schema migration backend. It discovers canonical metadata, proposes deterministic column mappings, requires human approval, compiles safe Snowflake SQL, executes through named profiles, validates and reconciles source and target aggregates, and stores an immutable workflow history.
+SchemaBridge is a governed PostgreSQL-to-Snowflake migration backend. It discovers schemas, proposes deterministic column mappings, requires human approval, compiles Snowflake SQL, records execution attempts, validates source and target aggregates, and preserves an auditable workflow history.
 
-The project is designed as a placement-ready backend demonstration: its automated core suite runs without production credentials, and the documentation distinguishes that coverage from optional live-database checks.
+It is a control plane, not a complete data-transfer platform. The current execution step runs `INSERT ... SELECT` inside Snowflake from a staging relation that must already be available there. SchemaBridge does not extract PostgreSQL rows or load that staging relation.
 
-## The problem it solves
+## Documentation
 
-Database migrations often mix metadata inspection, mapping decisions, SQL construction, credentials, execution, and verification in one opaque script. SchemaBridge separates those concerns into durable, reviewable steps. Mutations are idempotent, post-creation updates use optimistic concurrency, and execution accepts artifact references rather than client-provided SQL.
+- [Product requirements](docs/PRD.md) — current behavior, scope, workflow, and limitations.
+- [Architecture](docs/ARCHITECTURE.md) — components, request paths, databases, and design decisions.
+- [Setup](docs/SETUP.md) — clean-machine setup, configuration, operation, and troubleshooting.
+- [Code guide](docs/CODE_GUIDE.md) — a recommended study order and file-by-file navigation.
 
-## Core workflow
-
-```mermaid
-flowchart LR
-    A["Create workflow"] --> B["Discover PostgreSQL source"]
-    B --> C["Discover Snowflake target"]
-    C --> D["Generate deterministic mappings"]
-    D --> E["Human approval"]
-    E --> F["Compile Snowflake preview"]
-    F --> G["Execute approved migration"]
-    G --> H["Run paired validation"]
-    H --> I["Reconcile results"]
-    I --> J["Validated or review required"]
-```
-
-## Architecture
+## Architecture at a glance
 
 ```mermaid
 flowchart TB
-    Client["Swagger / API client"] --> API["FastAPI routes and strict schemas"]
-    API --> ORCH["Workflow orchestration services"]
-    ORCH --> DOMAIN["Canonical discovery, mapping, SQL, validation, reconciliation"]
-    ORCH --> REPO["Transactional workflow repository"]
-    REPO --> CP[("Control-plane PostgreSQL")]
-    ORCH --> DB["Profile-bound database services"]
-    DB --> PG[("Source PostgreSQL")]
-    DB --> SF[("Target Snowflake")]
+    Client["Swagger / API client"] --> API["FastAPI"]
+    API --> Orchestrators["Workflow orchestrators"]
+    Orchestrators --> DatabaseService["DatabaseService"]
+    DatabaseService --> Profiles["ProfileRegistry"]
+    Profiles --> Factory["ConnectorFactory"]
+    Factory --> Source[("Source PostgreSQL")]
+    Factory --> Target[("Target Snowflake")]
+    Orchestrators --> Repository["WorkflowRepository"]
+    Repository --> Control[("Control-plane PostgreSQL")]
 ```
 
-The control plane stores workflow state, immutable artifacts, idempotency records, execution attempts, validation runs, and append-only audit events. Source and target credentials stay in named runtime profiles and are never persisted in workflow artifacts.
+The source and target are data-plane systems. The separate control-plane PostgreSQL database stores workflow state, immutable artifacts, idempotency records, execution and validation attempts, and append-only audit events. It does not store migrated business rows.
 
-## Repository layout
+## Current workflow
 
-```text
-schemabridge/  Application and runtime code
-tests/         Automated tests and test fakes
-scripts/       Setup, verification, migration, and demo commands
-docs/          Connector and demonstration guides
-```
+1. Create a workflow with named source and target profiles.
+2. Discover canonical PostgreSQL and Snowflake metadata.
+3. Generate deterministic, evidence-backed mapping suggestions.
+4. Record human approval or overrides as a new immutable artifact.
+5. Compile a Snowflake transformation preview from the approved plan.
+6. Recompile, verify, claim, and execute the approved statement.
+7. Run generated read-only aggregate checks on source and target.
+8. Reconcile results into `VALIDATED` or `VALIDATION_REVIEW_REQUIRED`.
 
-## Implemented scope
+The lower-level `/api/v1/migrations` endpoints expose individual discovery, mapping, preview, and validation operations. The durable `/api/v1/migrations/workflows` endpoints add state transitions, artifacts, audit history, idempotency, optimistic concurrency, execution claims, and recovery states.
 
-- Canonical PostgreSQL and Snowflake schema discovery.
-- Deterministic, explainable column mapping and manual approval.
-- Safe Snowflake `SELECT` and `INSERT ... SELECT` compilation.
-- Profile-bound, write-authorized Snowflake migration execution.
-- Paired PostgreSQL/Snowflake aggregate validation and reconciliation.
-- Durable FastAPI workflows, artifacts, audit history, retries, and recovery quarantine.
-- Profile-bound database access and reusable connector extension points live under `schemabridge/`.
+## Key safety properties
 
-Workflow execution is currently PostgreSQL source to Snowflake target. MySQL and SQL Server exist in the older generic connector layer; they are not production migration-execution targets for the durable workflow.
+- The workflow API never accepts arbitrary migration SQL from a client.
+- Execution is tied to an immutable approved mapping artifact and recompiles SQL before use.
+- Identifiers are quoted and literal expression values use bound parameters.
+- Target writes require a Snowflake profile with `write_enabled=true`.
+- Every mutation requires an `Idempotency-Key`; later mutations also require the expected workflow version.
+- Immutable, hashed artifacts preserve discovery, approval, preview, execution, and validation evidence.
+- Concurrent execution and validation are guarded by durable control-plane claims.
+- A remote outcome that cannot be proved is quarantined in a recovery state instead of retried automatically.
+- Public errors and audit metadata exclude credentials, DSNs, hosts, query parameters, and raw driver failures.
 
-## Safety model
+## Quick start
 
-- A reviewed mapping artifact is required before transformation compilation.
-- The workflow execution API does not accept arbitrary SQL.
-- Credentials are resolved only through persisted profile identifiers.
-- Snowflake migration writes require `write_enabled=true` on the target profile.
-- Validation is generated by SchemaBridge and remains read-only.
-- Every mutation requires an `Idempotency-Key`.
-- After creation, workflow mutations carry the expected workflow version for optimistic concurrency.
-- Artifacts are immutable, versioned, hashed, and audited.
-- Confirmed rollback permits an explicit retry; uncertain execution or validation is quarantined for manual investigation.
-- Driver errors, DSNs, hosts, passwords, and query parameters are excluded from public errors and audit metadata.
+Prerequisites: Git and Python 3.12 or newer. Docker Compose v2 is optional unless you want the containerized control plane.
 
-## Workflow states
-
-Planning uses `DRAFT`, `DISCOVERED`, `MAPPING_PROPOSED`, and `MAPPING_APPROVED`. Execution uses `EXECUTION_READY`, `EXECUTING`, `EXECUTED`, and `EXECUTION_RECOVERY_REQUIRED`. Validation uses `VALIDATION_READY`, `VALIDATING`, `VALIDATED`, `VALIDATION_REVIEW_REQUIRED`, and `VALIDATION_RECOVERY_REQUIRED`. `FAILED` and `CANCELLED` are terminal administrative outcomes.
-
-## Artifact types
-
-1. `SOURCE_DISCOVERY`
-2. `TARGET_DISCOVERY`
-3. `MAPPING_PLAN`
-4. `APPROVED_MAPPING_PLAN`
-5. `TRANSFORMATION_PREVIEW`
-6. `EXECUTION_EVIDENCE`
-7. `VALIDATION_PREVIEW`
-8. `VALIDATION_EXECUTION_REPORT`
-
-## Local setup
-
-Requirements: Git and Python 3.12 or later. Docker Desktop or Docker Engine with Compose v2 is required only for the containerized setup. The image is pinned to Python 3.12.11.
-
-### Windows PowerShell
+Windows PowerShell:
 
 ```powershell
 git clone <repository-url>
 cd schemabridge
 PowerShell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 Copy-Item .\.env.example .\.env
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m scripts.demo_workflow
 ```
 
-The setup script creates `.venv`, upgrades pip to the repository minimum, and installs `requirements-dev.txt`, which includes the runtime dependencies and current test tools.
-
-### macOS, Linux, or another POSIX shell
+POSIX shell:
 
 ```bash
 git clone <repository-url>
@@ -113,43 +78,19 @@ python3 -m venv .venv
 python -m pip install "pip>=26.1.2"
 python -m pip install -r requirements-dev.txt
 cp .env.example .env
+python -m pytest -q
+python -m scripts.demo_workflow
 ```
 
-The checked-in example contains local demonstration defaults and placeholder integration values. Replace placeholders only in the ignored `.env`; never commit credentials. `requirements-api.lock` is the pinned API-only dependency set used by the Docker image, `requirements.txt` contains runtime dependencies, and `requirements-dev.txt` adds the development and test tools.
+The normal tests and default demo are credential-free. The demo creates and inspects a control-plane workflow; it does not claim a real Snowflake migration.
 
-## Configuration and database roles
+To inspect the ordered control-plane migrations without connecting:
 
-These databases have separate responsibilities and configuration:
+```powershell
+.\.venv\Scripts\python.exe -m scripts.migrate_control_plane --check
+```
 
-| Role | Purpose | Configuration |
-|---|---|---|
-| Control-plane PostgreSQL | Stores workflows, immutable artifacts, idempotency records, execution attempts, validation runs, and audit events. It never acts as the migration source. | `SCHEMABRIDGE_CONTROL_PLANE_DSN` |
-| Source PostgreSQL | Read-only schema discovery and source-side validation for a workflow. | A named PostgreSQL entry in `DB_PROFILES_JSON` |
-| Target Snowflake | Target discovery, approved `INSERT ... SELECT` execution, and target-side validation. | A named Snowflake entry in `DB_PROFILES_JSON` |
-
-`SCHEMABRIDGE_CONTROL_PLANE_DSN` is required to use durable workflow endpoints or run migrations. The FastAPI process can still start without it, but persistence-dependent operations are unavailable. Real discovery, execution, and validation additionally require the corresponding named profiles. The credential-free test suite does not require any live-database credentials.
-
-The root `.env.example` documents every local setting used by this workflow:
-
-- Compose: `SCHEMABRIDGE_API_PORT`, `SCHEMABRIDGE_CONTROL_PLANE_PORT`, `SCHEMABRIDGE_CONTROL_PLANE_DB`, `SCHEMABRIDGE_CONTROL_PLANE_USER`, and `SCHEMABRIDGE_CONTROL_PLANE_PASSWORD`.
-- Control plane: `SCHEMABRIDGE_CONTROL_PLANE_DSN`.
-- Named profiles: `DB_PROFILES_JSON`.
-- Connector defaults and limits: `DB_TYPE`, `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `DB_CONNECTION_OPTIONS`, `DB_TIMEOUT_SECONDS`, `DB_MAX_ROWS`, and `LOG_LEVEL`.
-- Optional tests: `SCHEMABRIDGE_RUN_CONTROL_PLANE_INTEGRATION`, `SCHEMABRIDGE_CONTROL_PLANE_TEST_DSN`, `SCHEMABRIDGE_POSTGRES_INTEGRATION`, `SCHEMABRIDGE_POSTGRES_HOST`, `SCHEMABRIDGE_POSTGRES_PORT`, `SCHEMABRIDGE_POSTGRES_DATABASE`, `SCHEMABRIDGE_POSTGRES_USERNAME`, `SCHEMABRIDGE_POSTGRES_PASSWORD`, and `DB_SMOKE_TEST_CONNECT`.
-
-The Compose defaults are for a disposable local control plane. Angle-bracket values are placeholders, not usable credentials. Production secrets must be supplied outside Git.
-
-### Named profiles and write authorization
-
-`DB_PROFILES_JSON` is a JSON object keyed by profile ID. Workflows persist only those IDs; the runtime resolves the corresponding host, database, username, password, connector options, timeout, row limit, and `write_enabled` value. Profiles default to `write_enabled=false`.
-
-Source discovery and validation do not require write authorization. Snowflake migration execution fails closed unless the exact target profile referenced by the workflow exists, uses the supported Snowflake execution connector, and explicitly has `write_enabled=true`. Enabling writes authorizes the profile boundary; it does not bypass mapping approval, artifact-version checks, generated-SQL validation, idempotency, or optimistic concurrency.
-
-Snowflake profile values include the account identifier, database, warehouse, schema, role, username, and secret shown as placeholders in `.env.example`. A real demonstration should use least-privilege non-production databases and a target role restricted to the intended objects.
-
-## Run the API on the host
-
-Start only the local control plane, apply migrations, and then run the API:
+To run the API with a local control plane, first configure `.env`, then:
 
 ```powershell
 docker compose up -d control-plane
@@ -157,136 +98,25 @@ docker compose up -d control-plane
 .\.venv\Scripts\python.exe -m uvicorn schemabridge.api.app:create_app --factory --env-file .env --host 127.0.0.1 --port 8000
 ```
 
-POSIX-shell equivalent:
+Open Swagger UI at <http://localhost:8000/docs>. See [SETUP.md](docs/SETUP.md) for named PostgreSQL/Snowflake profiles, required credentials, Docker Compose, environment variables, and troubleshooting.
 
-```bash
-docker compose up -d control-plane
-.venv/bin/python -m scripts.migrate_control_plane
-.venv/bin/python -m uvicorn schemabridge.api.app:create_app --factory --env-file .env --host 127.0.0.1 --port 8000
+## Repository layout
+
+```text
+schemabridge/   Application, domain, connector, and persistence code
+tests/          Credential-free tests and optional integration contracts
+scripts/        Setup, verification, migrations, and demo commands
+docs/           Product, architecture, setup, and study guides
 ```
 
-Open:
+## Current limitations
 
-- Swagger UI: <http://localhost:8000/docs>
-- OpenAPI JSON: <http://localhost:8000/openapi.json>
-- Liveness: <http://localhost:8000/health/live>
-- Readiness: <http://localhost:8000/health/ready>
+- No PostgreSQL row extraction or Snowflake staging loader is implemented.
+- No real Snowflake migration has been verified in this local environment.
+- Validation compares generated aggregates, not every row.
+- Uncertain remote outcomes require manual investigation.
+- The durable workflow has no authentication, background worker, frontend, file ingestion, profiling, or production deployment layer.
+- MySQL and SQL Server exist behind the generic connector factory but are not supported durable migration-execution targets.
+- Static packaging and Compose configuration are tested; a running Docker deployment is not claimed as verified here.
 
-The API can start without real source PostgreSQL or target Snowflake profiles. Operations that require an unavailable profile fail closed with sanitized errors.
-
-## Docker Compose
-
-```powershell
-Copy-Item .\.env.example .\.env
-docker compose config
-docker compose up --build -d
-docker compose ps
-```
-
-In a POSIX shell, use `cp .env.example .env`; the `docker compose` commands are otherwise identical.
-
-Compose starts:
-
-- `control-plane`: persistent PostgreSQL with a health check.
-- `migrate`: a one-shot checksum-verified migration job.
-- `api`: the non-root FastAPI service, started only after migrations succeed.
-
-The Compose structure and packaging assertions are covered by credential-free tests. Docker was not available on the machine used for the latest repository verification, so the image build, running containers, and container health checks have not been claimed as locally verified.
-
-Stop containers without deleting workflow data:
-
-```powershell
-docker compose down
-```
-
-Delete the disposable local control-plane volume only when intentional:
-
-```powershell
-docker compose down -v
-```
-
-## Control-plane migrations
-
-Migrations are explicit and ordered:
-
-- `0001_workflow_audit.sql`
-- `0002_workflow_execution.sql`
-- `0003_workflow_validation.sql`
-
-Inspect the migration set without connecting:
-
-```powershell
-.\.venv\Scripts\python.exe -m scripts.migrate_control_plane --check
-```
-
-Apply or re-verify it against `SCHEMABRIDGE_CONTROL_PLANE_DSN`:
-
-```powershell
-.\.venv\Scripts\python.exe -m scripts.migrate_control_plane
-```
-
-Applied checksums are recorded. Re-running is safe; changing an already-applied migration fails rather than silently rewriting the database. Application startup does not mutate the control plane. Compose runs the same explicit migration command in its one-shot service.
-
-## Tests
-
-The normal suite is credential-free:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-PowerShell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
-```
-
-The end-to-end workflow test uses the same FastAPI orchestration boundaries with fake remote execution and validation boundaries:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_workflow_end_to_end.py -q
-```
-
-Optional disposable PostgreSQL integration tests require the explicit environment flags documented in `.env.example` and a database name containing `test`.
-
-POSIX-shell commands for the same suite are:
-
-```bash
-.venv/bin/python -m pytest -q
-```
-
-## Example workflow
-
-Create and inspect a control-plane workflow without claiming a real migration:
-
-```powershell
-.\.venv\Scripts\python.exe -m scripts.demo_workflow
-```
-
-In a POSIX shell, run `.venv/bin/python -m scripts.demo_workflow`.
-
-After configuring real source and target profiles, discovery and mapping proposal generation can be demonstrated with:
-
-```powershell
-.\.venv\Scripts\python.exe -m scripts.demo_workflow --discover
-```
-
-The script deliberately stops before approval and execution. The complete HTTP sequence, response-derived version handling, and separation between local and real demonstrations are in [LOCAL_WORKFLOW_DEMO.md](docs/LOCAL_WORKFLOW_DEMO.md).
-
-## Verified versus credential-gated behavior
-
-| Area | Current evidence |
-|---|---|
-| Workflow state machine, persistence orchestration, approval, SQL compilation, execution claims, validation reconciliation, artifacts, audit ordering, recovery, and idempotent replay | Covered by credential-free automated tests. The comprehensive workflow test uses production FastAPI orchestration with fake remote execution and validation boundaries. |
-| PostgreSQL and Snowflake discovery behavior | Covered by deterministic connector tests with fake driver responses. An optional PostgreSQL discovery integration test requires the `SCHEMABRIDGE_POSTGRES_*` variables. |
-| Migrations `0001`-`0003` | Ordering, checksums, repeat behavior, schema expectations, and repository contracts are automated. The disposable live-PostgreSQL contract requires `SCHEMABRIDGE_RUN_CONTROL_PLANE_INTEGRATION=1` and `SCHEMABRIDGE_CONTROL_PLANE_TEST_DSN`. |
-| Real Snowflake migration and validation | Requires real PostgreSQL/Snowflake profiles and an explicitly write-enabled, least-privilege Snowflake target. It has not been executed in this local environment. |
-| Docker image and Compose runtime | Packaging is statically checked, but Docker build and container health were not run on the latest verification host because Docker was unavailable. |
-
-## Interview demo
-
-See [INTERVIEW_DEMO.md](docs/INTERVIEW_DEMO.md) for a 5–7 minute sequence, architecture talking points, failure scenarios, and factual answers to likely questions.
-
-## Honest limitations
-
-- No real Snowflake migration has been executed in this local environment.
-- Uncertain outcomes require manual investigation; automatic resolution is not implemented.
-- Validation uses aggregate and targeted checks, not expensive full-row comparison.
-- There is no authentication, frontend, background worker, AWS/PySpark, Excel/Word export, or public deployment in the durable backend.
-- Docker packaging is provided for local demonstration and controlled evaluation, but the latest verification host could not run Docker and this project does not claim production readiness.
-- Advanced fuzzy matching and profiling are intentionally out of scope.
+For a guided credential-free demonstration, see [LOCAL_WORKFLOW_DEMO.md](docs/LOCAL_WORKFLOW_DEMO.md). For interview preparation, see [INTERVIEW_DEMO.md](docs/INTERVIEW_DEMO.md).

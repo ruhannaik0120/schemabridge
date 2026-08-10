@@ -1,7 +1,9 @@
-"""SQL validation guardrails for controlled SchemaBridge database operations.
+"""Provide lexical SQL guardrails for controlled database operations.
 
-This module keeps the validation lightweight and readable. It should not parse
-SQL fully or take on connector responsibilities.
+The guard rejects comments and multiple top-level statements after masking
+quoted content.  It is intentionally not a full parser and is used only as
+defense in depth beside generated SQL, bound parameters, profile permissions,
+and connector-specific execution boundaries.
 """
 
 from __future__ import annotations
@@ -135,7 +137,10 @@ def _has_adjacent_tsql_statement(sql: str) -> bool:
 
 
 def validate_query(sql: str, db_type: str = "") -> tuple[bool, str]:
-    """Validate that an approved request contains one unambiguous statement."""
+    """Return whether an approved request contains one unambiguous statement.
+
+    The reason is safe for diagnostics and never includes submitted SQL.
+    """
 
     if not sql or not sql.strip():
         return False, "Empty query is not allowed."

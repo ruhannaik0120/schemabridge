@@ -1,4 +1,10 @@
-"""Durable workflow orchestration for post-execution read-only validation."""
+"""Coordinate durable post-execution validation and reconciliation.
+
+The orchestrator proves that migration execution committed, generates paired
+read-only checks from approved mappings, persists a validation plan, claims the
+run, and records its report.  Concurrent or indeterminate work is quarantined
+so a missing response cannot be mistaken for successful validation.
+"""
 
 from __future__ import annotations
 
@@ -45,11 +51,15 @@ from schemabridge.services.workflow_persistence import WorkflowPersistenceServic
 
 
 def _now() -> datetime:
+    """Return a timezone-aware timestamp; tests may inject a fixed clock."""
+
     return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True, slots=True)
 class WorkflowValidationResult:
+    """Bundle terminal workflow state, run, plan/evidence artifacts, and report."""
+
     workflow: MigrationWorkflow
     run: WorkflowValidationRun
     plan_artifact: WorkflowArtifact
@@ -58,6 +68,8 @@ class WorkflowValidationResult:
 
 
 class WorkflowValidationOrchestrator:
+    """Enforce durable validation preconditions around read-only domain services."""
+
     def __init__(
         self,
         persistence: WorkflowPersistenceService,
@@ -67,6 +79,8 @@ class WorkflowValidationOrchestrator:
         clock: Callable[[], datetime] = _now,
         uuid_factory: Callable[[], UUID] = uuid4,
     ) -> None:
+        """Bind persistence, compilation, execution, and deterministic test hooks."""
+
         self.persistence = persistence
         self.validation_compiler = validation_compiler
         self.validation_execution_service = validation_execution_service
@@ -81,6 +95,8 @@ class WorkflowValidationOrchestrator:
         *,
         require_latest: bool,
     ) -> WorkflowArtifact:
+        """Load a workflow-owned artifact and optionally require the latest version."""
+
         artifact = self.persistence.get_artifact(workflow_id, artifact_version)
         if artifact is None:
             raise WorkflowRequiredArtifactError()
@@ -94,6 +110,8 @@ class WorkflowValidationOrchestrator:
 
     @staticmethod
     def _safe_plan(plan: tuple[GeneratedValidationSql, GeneratedValidationSql]) -> None:
+        """Require an ordered PostgreSQL/Snowflake pair of read-only statements."""
+
         if len(plan) != 2 or plan[0].dialect is not SqlDialect.POSTGRESQL or plan[1].dialect is not SqlDialect.SNOWFLAKE:
             raise WorkflowUnsafeValidationQueryError()
         forbidden = (" INSERT ", " UPDATE ", " DELETE ", " MERGE ", " CREATE ", " ALTER ", " DROP ", " BEGIN ", " COMMIT ", " ROLLBACK ")
@@ -113,6 +131,8 @@ class WorkflowValidationOrchestrator:
         target_profile_id: str,
         timeout_seconds: int | None,
     ) -> str:
+        """Hash all validation inputs used to recognize an exact replay."""
+
         return request_hash(
             "WORKFLOW_VALIDATE",
             {
@@ -127,6 +147,8 @@ class WorkflowValidationOrchestrator:
         )
 
     def _terminal_result(self, workflow_id: UUID, run: WorkflowValidationRun) -> WorkflowValidationResult:
+        """Replay a terminal run or surface its recorded recovery condition."""
+
         if run.status is WorkflowValidationRunStatus.OUTCOME_UNCERTAIN:
             raise WorkflowValidationOutcomeUncertainError()
         if run.status not in {WorkflowValidationRunStatus.SUCCEEDED, WorkflowValidationRunStatus.REVIEW_REQUIRED} or run.evidence_artifact_id is None:
@@ -159,6 +181,8 @@ class WorkflowValidationOrchestrator:
         idempotency_key: str,
         failure_category: str,
     ) -> None:
+        """Persist recovery-required state, then raise the public domain failure."""
+
         self.persistence.complete_validation_run(
             workflow.workflow_id,
             workflow.version,
@@ -189,6 +213,13 @@ class WorkflowValidationOrchestrator:
         actor_reference: str | None,
         request_id: str | None,
     ) -> WorkflowValidationResult:
+        """Plan, claim, run, reconcile, and persist one workflow validation.
+
+        Exact replays return durable evidence.  A new run must reference latest
+        committed execution evidence and an approved plan for the workflow's
+        configured PostgreSQL and Snowflake profiles.
+        """
+
         command_hash = self._command_hash(
             workflow_id,
             expected_version=expected_version,
@@ -198,6 +229,8 @@ class WorkflowValidationOrchestrator:
             target_profile_id=target_profile_id,
             timeout_seconds=timeout_seconds,
         )
+        # A completed first call has already changed workflow state, so replay
+        # resolution must happen before current-state eligibility checks.
         replay = self.persistence.get_validation_run_by_command(workflow_id, idempotency_key, command_hash)
         if replay is not None and replay.status in {
             WorkflowValidationRunStatus.SUCCEEDED,
@@ -230,6 +263,8 @@ class WorkflowValidationOrchestrator:
                 require_latest=current,
             )
             execution = execution_evidence_from_artifact(execution_artifact)
+            # Remote statement completion alone is insufficient; validation is
+            # allowed only when the persisted evidence proves a committed write.
             if execution.status is not MigrationExecutionAttemptStatus.SUCCEEDED or execution.transaction_outcome is not MigrationTransactionOutcome.COMMITTED:
                 raise WorkflowValidationNotReadyError()
             approved = approved_mapping_plan_from_artifact(approved_artifact)
@@ -249,6 +284,9 @@ class WorkflowValidationOrchestrator:
             except Exception:
                 raise WorkflowUnsafeValidationQueryError() from None
             self._safe_plan(plan)
+            # The fingerprint binds the run to execution, approval, generated
+            # checks, and profiles without persisting credentials or raw SQL in
+            # the idempotency key.
             _, plan_hash = serialize_artifact(WorkflowArtifactType.VALIDATION_PREVIEW, plan)
             fingerprint = request_hash(
                 "WORKFLOW_VALIDATION_FINGERPRINT",
@@ -278,6 +316,8 @@ class WorkflowValidationOrchestrator:
                 idempotency_key=idempotency_key,
                 actor_reference=actor_reference,
             )
+            # Persist the immutable plan and durable claim before either remote
+            # validation query begins.
             workflow, run, plan_artifact, _ = self.persistence.claim_validation_run(
                 workflow_id,
                 expected_version,
@@ -295,10 +335,14 @@ class WorkflowValidationOrchestrator:
             approved_artifact = self._artifact(workflow_id, run.approved_mapping_artifact_version, WorkflowArtifactType.APPROVED_MAPPING_PLAN, require_latest=False)
             approved = approved_mapping_plan_from_artifact(approved_artifact)
 
+        # Execute the persisted plan, not a freshly supplied client payload, so
+        # the eventual evidence refers to exactly what the claim recorded.
         plan = validation_preview_from_artifact(plan_artifact)
         self._safe_plan(plan)
         running, acquired = self.persistence.mark_validation_running(run.run_id, self.clock())
         if not acquired:
+            # A stale RUNNING claim is uncertain rather than failed: one or both
+            # remote queries may have completed after contact was lost.
             if running.status is WorkflowValidationRunStatus.RUNNING and running.running_at is not None and (self.clock() - running.running_at).total_seconds() > running.timeout_seconds:
                 self._complete_uncertain(
                     workflow,
@@ -334,6 +378,8 @@ class WorkflowValidationOrchestrator:
                 idempotency_key=idempotency_key,
                 failure_category="VALIDATION_CONNECTOR_OUTCOME_UNCERTAIN",
             )
+        # A report is trusted only when it echoes the claimed plan and profiles;
+        # otherwise it cannot serve as evidence for this workflow run.
         if not isinstance(report, MigrationValidationExecutionReport) or (report.source_sql_summary, report.target_sql_summary) != plan or report.source_profile_id != run.source_profile_id or report.target_profile_id != run.target_profile_id:
             self._complete_uncertain(
                 workflow,

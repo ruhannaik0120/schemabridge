@@ -1,4 +1,10 @@
-"""Profile-bound database access used by SchemaBridge workflows."""
+"""Mediate all workflow access to a named database profile.
+
+The service resolves one immutable profile into a connector, applies configured
+timeouts and row limits, enforces read/write policy, validates generated SQL,
+and normalizes connector results.  It deliberately exposes only sanitized
+errors so credentials and driver details cannot cross the application boundary.
+"""
 
 from __future__ import annotations
 
@@ -30,13 +36,21 @@ class DatabaseExecutionResult:
 
 
 class DatabaseService:
-    """Resolve one immutable profile and mediate its connector operations."""
+    """Provide bounded discovery and execution for one immutable profile.
+
+    Orchestrators use this class instead of concrete connectors.  That keeps
+    profile permissions, limit clamping, SQL checks, result normalization, and
+    connector error redaction consistent across discovery, migration, and
+    validation operations.
+    """
 
     def __init__(
         self,
         profile: ConnectionProfile,
         connector: object | None = None,
     ) -> None:
+        """Bind ``profile`` to a matching supplied or factory-built connector."""
+
         if not isinstance(profile, ConnectionProfile):
             raise TypeError("profile must be a ConnectionProfile.")
         if (
@@ -52,21 +66,29 @@ class DatabaseService:
         )
 
     def _effective_timeout(self, timeout_seconds: int | None) -> int:
+        """Validate a requested timeout and cap it at the profile maximum."""
+
         if isinstance(timeout_seconds, bool) or (
             timeout_seconds is not None and timeout_seconds <= 0
         ):
             raise DatabaseAccessError("timeout_seconds must be a positive integer.")
+        # A caller may ask for a stricter deadline but cannot weaken the
+        # operator-controlled profile limit.
         return min(
             timeout_seconds or self.profile.timeout_seconds,
             self.profile.timeout_seconds,
         )
 
     def _effective_row_limit(self, max_rows: int | None) -> int:
+        """Validate a requested row count and cap it at the profile maximum."""
+
         if isinstance(max_rows, bool) or (max_rows is not None and max_rows <= 0):
             raise DatabaseAccessError("max_rows must be a positive integer.")
         return min(max_rows or self.profile.max_rows, self.profile.max_rows)
 
     def _execution_database(self, database: str | None) -> str:
+        """Prevent a profile from being redirected to an unconfigured database."""
+
         requested = (database or "").strip()
         configured = self.profile.database.strip()
         if requested and configured and requested.casefold() != configured.casefold():
@@ -148,15 +170,28 @@ class DatabaseService:
         read_only: bool,
         require_write_enabled: bool,
     ) -> DatabaseExecutionResult:
+        """Apply policy, execute through the connector, and normalize its result.
+
+        Raw connector exceptions are intentionally replaced with
+        :class:`DatabaseAccessError`; callers receive neither credentials nor
+        driver-specific connection details.
+        """
+
         try:
             if not isinstance(sql, str) or not sql.strip():
                 raise DatabaseAccessError("A non-empty SQL statement is required.")
             statement = sql.strip()
             normalized = statement.lstrip().upper()
+            # Validation is independently constrained to reads even though the
+            # selected profile might also permit migration writes.
             if read_only and not normalized.startswith("SELECT"):
                 raise DatabaseAccessError("Validation execution requires a SELECT statement.")
+            # Write permission belongs to the server-side profile.  It cannot be
+            # enabled by a request field or by generated SQL alone.
             if require_write_enabled and self.profile.write_enabled is not True:
                 raise DatabaseAccessError("The selected profile is not write enabled.")
+            # Generated statements still pass the shared lexical guard as a
+            # defense-in-depth check before crossing the connector boundary.
             valid, _reason = validate_query(statement, self.profile.db_type)
             if not valid:
                 raise DatabaseAccessError(
@@ -186,6 +221,8 @@ class DatabaseService:
                 rows_affected is not None and not isinstance(rows_affected, int)
             ):
                 rows_affected = None
+            # Convert driver-owned containers to immutable application values
+            # before the connector or cursor is eligible for cleanup.
             return DatabaseExecutionResult(
                 columns=tuple(str(column) for column in columns),
                 rows=tuple(rows),
@@ -250,6 +287,8 @@ _DATABASE_SERVICE_LOCK = Lock()
 
 
 def _load_profile_registry() -> ProfileRegistry:
+    """Parse the process profile document without caching environment secrets."""
+
     return ProfileRegistry.from_json(os.getenv("DB_PROFILES_JSON", ""))
 
 
@@ -257,6 +296,8 @@ def get_database_service(profile_id: str) -> DatabaseService:
     """Return a cached service for an explicitly named connection profile."""
 
     global _PROFILE_REGISTRY
+    # Registry and service creation share one lock so concurrent first requests
+    # cannot build duplicate connectors for the same normalized profile ID.
     with _DATABASE_SERVICE_LOCK:
         registry = _PROFILE_REGISTRY
         if registry is None:
@@ -282,6 +323,8 @@ def reset_database_services(profile_id: str | None = None) -> None:
 
     global _PROFILE_REGISTRY
     detached: list[DatabaseService] = []
+    # Detach under the lock, then close outside it.  Driver cleanup can block or
+    # fail and must not prevent unrelated profile resolution.
     with _DATABASE_SERVICE_LOCK:
         if profile_id is None:
             detached = list(_DATABASE_SERVICES.values())

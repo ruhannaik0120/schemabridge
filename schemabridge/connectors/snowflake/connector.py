@@ -1,4 +1,10 @@
-"""Snowflake implementation of the database connector interface."""
+"""Provide profile-bound Snowflake access and canonical schema discovery.
+
+The connector owns account/session configuration, operation-scoped resources,
+row-limit enforcement, fixed metadata queries and commands, normalization, and
+sanitized driver failures.  It is the concrete target boundary used by durable
+migration execution after higher layers enforce approval and write permission.
+"""
 
 from __future__ import annotations
 
@@ -61,7 +67,7 @@ _SNOWFLAKE_OBJECT_TYPES = {
 
 
 class SnowflakeConnector(DatabaseConnector):
-    """Connector implementation for Snowflake via snowflake-connector-python."""
+    """Implement bounded Snowflake operations through the lazily loaded driver."""
 
     profile_db_type = "snowflake"
 
@@ -162,6 +168,8 @@ class SnowflakeConnector(DatabaseConnector):
         try:
             yield connection
         finally:
+            # Session state is profile-specific and must not leak between
+            # requests even when statement execution raises.
             connection.close()
 
     def test_connection(self, database: str | None = None, timeout_seconds: int | None = None) -> dict[str, Any]:
@@ -379,6 +387,8 @@ class SnowflakeConnector(DatabaseConnector):
             try:
                 yield connection
             finally:
+                # Discovery uses an isolated autocommit session so fixed
+                # metadata commands cannot affect later workflow operations.
                 connection.close()
         except (ConfigError, SchemaDiscoveryError):
             raise
@@ -401,6 +411,8 @@ class SnowflakeConnector(DatabaseConnector):
                 cursor.execute(query, timeout=timeout_seconds)
             return tuple(self._fetch_rows(cursor)["rows"])
         finally:
+            # Fixed discovery statements still use short-lived cursors so a
+            # malformed result cannot retain remote resources.
             cursor.close()
 
     def _verify_discovery_database(

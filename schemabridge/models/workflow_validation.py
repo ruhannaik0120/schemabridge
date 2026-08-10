@@ -1,4 +1,10 @@
-"""Safe durable models for one workflow-scoped validation run."""
+"""Define the durable lifecycle of one workflow-scoped validation run.
+
+The run binds execution evidence, an approved mapping, generated validation
+SQL, and source/target profiles to a single fingerprint.  Field invariants make
+claimed, running, successful, review-required, and uncertain states mutually
+consistent before they reach persistence.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +18,8 @@ from schemabridge.models.workflow import AuditActorType
 
 
 class WorkflowValidationRunStatus(str, Enum):
+    """Track the claim, execution, and terminal result of validation."""
+
     CLAIMED = "CLAIMED"
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
@@ -42,6 +50,8 @@ def _utc(value: datetime | None, name: str, *, required: bool = True) -> None:
 
 @dataclass(frozen=True, slots=True, kw_only=True, repr=False)
 class WorkflowValidationRun:
+    """Represent one durable validation claim and its optional evidence artifact."""
+
     run_id: UUID
     workflow_id: UUID
     execution_attempt_id: UUID

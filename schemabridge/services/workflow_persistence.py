@@ -1,4 +1,10 @@
-"""Durable workflow policy, typed artifacts, hashing, and audit orchestration."""
+"""Apply workflow policy before invoking the durable repository contract.
+
+This service validates transitions and artifact ownership, creates canonical
+payload hashes and audit events, and supplies repository operations with
+optimistic versions and idempotency hashes.  It owns domain policy; the concrete
+repository owns transaction and SQL mechanics.
+"""
 from __future__ import annotations
 from datetime import datetime,timezone
 import re
@@ -17,7 +23,11 @@ from schemabridge.persistence.serialization import request_hash,serialize_artifa
 
 def _now():return datetime.now(timezone.utc)
 class WorkflowPersistenceService:
+ """Turn typed workflow commands into atomic repository operations."""
+
  def __init__(self,repository:WorkflowRepository,*,clock:Callable[[],datetime]=_now,uuid_factory:Callable[[],UUID]=uuid4):
+  """Bind the repository and injectable identity/time sources."""
+
   self.repository=repository;self.clock=clock;self.uuid_factory=uuid_factory
  def _context(self,actor_type,actor_reference,request_id,idempotency_key):
   if not isinstance(actor_type,AuditActorType):raise TypeError("actor_type is invalid.")
@@ -27,6 +37,8 @@ class WorkflowPersistenceService:
  def _expected(value):
   if isinstance(value,bool) or not isinstance(value,int) or value<1:raise ValueError("expected_version must be a positive integer.")
  def create_workflow(self,*,display_name,source_profile_id,target_profile_id,source_relation,target_relation,idempotency_key,actor_type=AuditActorType.SYSTEM,actor_reference=None,request_id=None):
+  """Create a version-one draft and its immutable creation audit event."""
+
   self._context(actor_type,actor_reference,request_id,idempotency_key);now=self.clock();workflow=MigrationWorkflow(workflow_id=self.uuid_factory(),display_name=display_name,source_profile_id=source_profile_id,target_profile_id=target_profile_id,source_relation=source_relation,target_relation=target_relation,status=MigrationWorkflowStatus.DRAFT,version=1,created_at=now,updated_at=now)
   digest=request_hash("CREATE_WORKFLOW",{"display_name":display_name,"source_profile_id":source_profile_id,"target_profile_id":target_profile_id,"source_relation":source_relation,"target_relation":target_relation})
   event=self._event(workflow,MigrationAuditEventType.WORKFLOW_CREATED,None,MigrationWorkflowStatus.DRAFT,actor_type,actor_reference,request_id,idempotency_key,now)
@@ -42,6 +54,8 @@ class WorkflowPersistenceService:
  def get_validation_run(self,run_id):return self.repository.get_validation_run(run_id)
  def list_audit_events(self,workflow_id,*,offset=0,limit=100):return self.repository.list_audit_events(workflow_id,offset=offset,limit=limit)
  def transition_status(self,workflow_id,*,expected_version,new_status,idempotency_key,reason_code=None,actor_type=AuditActorType.SYSTEM,actor_reference=None,request_id=None):
+  """Validate and persist a caller-allowed administrative transition."""
+
   self._context(actor_type,actor_reference,request_id,idempotency_key);self._expected(expected_version);current=self.repository.get_workflow(workflow_id)
   digest=request_hash("TRANSITION_STATUS",{"workflow_id":workflow_id,"expected_version":expected_version,"new_status":new_status,"reason_code":reason_code})
   # A stale expected version is resolved by the repository: it may be an exact
@@ -58,6 +72,8 @@ class WorkflowPersistenceService:
  def mark_failed(self,workflow_id,**kwargs):return self.transition_status(workflow_id,new_status=MigrationWorkflowStatus.FAILED,**kwargs)
  def cancel_workflow(self,workflow_id,**kwargs):return self.transition_status(workflow_id,new_status=MigrationWorkflowStatus.CANCELLED,**kwargs)
  def _append(self,workflow_id,expected_version,kind,payload,idempotency_key,actor_type,actor_reference,request_id):
+  """Validate, serialize, hash, and append one typed immutable artifact."""
+
   self._context(actor_type,actor_reference,request_id,idempotency_key);self._expected(expected_version);workflow=self.repository.get_workflow(workflow_id);self._validate_identity(workflow,kind,payload)
   if workflow.version==expected_version and workflow.status in {MigrationWorkflowStatus.EXECUTING,MigrationWorkflowStatus.VALIDATING}:raise WorkflowOperationUnavailableError()
   try:data,digest=serialize_artifact(kind,payload)
@@ -74,6 +90,8 @@ class WorkflowPersistenceService:
  def append_validation_preview(self,workflow_id,expected_version,payload:tuple[GeneratedValidationSql,GeneratedValidationSql],**context):return self._append(workflow_id,expected_version,WorkflowArtifactType.VALIDATION_PREVIEW,payload,**context)
  def append_validation_execution_report(self,workflow_id,expected_version,payload:MigrationValidationExecutionReport,**context):return self._append(workflow_id,expected_version,WorkflowArtifactType.VALIDATION_EXECUTION_REPORT,payload,**context)
  def _record_operation(self,workflow_id,expected_version,kind,payload,new_status,command_hash,idempotency_key,actor_type,actor_reference,request_id):
+  """Build evidence and an optional transition for one orchestrated command."""
+
   self._context(actor_type,actor_reference,request_id,idempotency_key);self._expected(expected_version)
   if not isinstance(command_hash,str) or re.fullmatch(r"[0-9a-f]{64}",command_hash) is None:raise ValueError("command_hash is invalid.")
   workflow=self.repository.get_workflow(workflow_id);self._validate_identity(workflow,kind,payload)
@@ -91,6 +109,8 @@ class WorkflowPersistenceService:
  def record_approved_mapping(self,workflow_id,expected_version,payload:ApprovedTableMappingPlan,*,command_hash:str,**context):return self._record_operation(workflow_id,expected_version,WorkflowArtifactType.APPROVED_MAPPING_PLAN,payload,MigrationWorkflowStatus.MAPPING_APPROVED,command_hash,**context)
  def record_transformation_preview(self,workflow_id,expected_version,payload:GeneratedTransformationSql,*,command_hash:str,**context):return self._record_operation(workflow_id,expected_version,WorkflowArtifactType.TRANSFORMATION_PREVIEW,payload,MigrationWorkflowStatus.EXECUTION_READY,command_hash,**context)
  def claim_execution_attempt(self,workflow_id,expected_version,attempt:MigrationExecutionAttempt,*,command_hash,idempotency_key,actor_type,actor_reference,request_id):
+  """Validate execution eligibility and delegate the durable claim."""
+
   self._context(actor_type,actor_reference,request_id,idempotency_key);self._expected(expected_version)
   if not isinstance(command_hash,str) or re.fullmatch(r"[0-9a-f]{64}",command_hash) is None:raise ValueError("command_hash is invalid.")
   workflow=self.repository.get_workflow(workflow_id)
@@ -99,6 +119,8 @@ class WorkflowPersistenceService:
   return self.repository.claim_execution_attempt(workflow_id,expected_version,attempt,event,idempotency_key=idempotency_key,request_hash=command_hash)
  def mark_execution_running(self,attempt_id,running_at):return self.repository.mark_execution_running(attempt_id,running_at)
  def complete_execution_attempt(self,workflow_id,expected_version,attempt_id,evidence:MigrationExecutionEvidence,new_status,*,idempotency_key,actor_type,actor_reference,request_id):
+  """Build immutable execution evidence for atomic repository completion."""
+
   self._context(actor_type,actor_reference,request_id,idempotency_key);self._expected(expected_version)
   workflow=self.repository.get_workflow(workflow_id)
   if workflow.version==expected_version and new_status not in ALLOWED_TRANSITIONS[workflow.status]:raise InvalidWorkflowTransitionError()
@@ -110,6 +132,8 @@ class WorkflowPersistenceService:
   transition_event=self._event(workflow,MigrationAuditEventType.STATUS_CHANGED,workflow.status,new_status,actor_type,actor_reference,request_id,idempotency_key,evidence.completed_at)
   return self.repository.complete_execution_attempt(workflow_id,expected_version,attempt_id,evidence,artifact,artifact_event,new_status,transition_event)
  def claim_validation_run(self,workflow_id,expected_version,run:WorkflowValidationRun,preview:tuple[GeneratedValidationSql,GeneratedValidationSql],*,command_hash,idempotency_key,actor_type,actor_reference,request_id):
+  """Validate, persist, and claim the generated validation plan."""
+
   self._context(actor_type,actor_reference,request_id,idempotency_key);self._expected(expected_version)
   if not isinstance(command_hash,str) or re.fullmatch(r"[0-9a-f]{64}",command_hash) is None:raise ValueError("command_hash is invalid.")
   workflow=self.repository.get_workflow(workflow_id);self._validate_identity(workflow,WorkflowArtifactType.VALIDATION_PREVIEW,preview)
@@ -123,6 +147,8 @@ class WorkflowPersistenceService:
   return self.repository.claim_validation_run(workflow_id,expected_version,run,artifact,artifact_event,transition_event,idempotency_key=idempotency_key,request_hash=command_hash)
  def mark_validation_running(self,run_id,running_at):return self.repository.mark_validation_running(run_id,running_at)
  def complete_validation_run(self,workflow_id,expected_version,run_id,report:MigrationValidationExecutionReport|None,new_status,*,completed_at,failure_category,idempotency_key,actor_type,actor_reference,request_id):
+  """Prepare optional report evidence and delegate terminal completion."""
+
   self._context(actor_type,actor_reference,request_id,idempotency_key);self._expected(expected_version);workflow=self.repository.get_workflow(workflow_id)
   if workflow.version==expected_version and new_status not in ALLOWED_TRANSITIONS[workflow.status]:raise InvalidWorkflowTransitionError()
   artifact=None;artifact_event=None
@@ -136,6 +162,8 @@ class WorkflowPersistenceService:
   return self.repository.complete_validation_run(workflow_id,expected_version,run_id,report,artifact,artifact_event,new_status,transition_event,completed_at=completed_at,failure_category=failure_category)
  @staticmethod
  def _validate_identity(workflow,kind,payload):
+  """Prove that typed artifact relations/profiles belong to the workflow."""
+
   def relation(table):return WorkflowRelation(catalog_name=table.catalog_name,schema_name=table.schema_name,object_name=table.object_name,system=table.system)
   valid=True
   if kind is WorkflowArtifactType.SOURCE_DISCOVERY:valid=relation(payload)==workflow.source_relation

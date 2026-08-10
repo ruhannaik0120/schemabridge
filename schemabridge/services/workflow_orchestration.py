@@ -1,4 +1,10 @@
-"""Durable orchestration for workflow-scoped migration planning operations."""
+"""Coordinate the durable planning half of a migration workflow.
+
+The orchestrator sequences profile-bound discovery, deterministic mapping,
+human approval, and transformation preview.  It checks workflow state and
+artifact lineage, delegates pure domain work, and asks the persistence service
+to atomically record the resulting artifact, state change, and audit evidence.
+"""
 
 from __future__ import annotations
 
@@ -42,12 +48,16 @@ from schemabridge.services.workflow_persistence import WorkflowPersistenceServic
 
 @dataclass(frozen=True, slots=True)
 class WorkflowPlanningResult:
+    """Return the updated workflow, persisted artifact, and typed artifact value."""
+
     workflow: MigrationWorkflow
     artifact: WorkflowArtifact
     result: Any
 
 
 class WorkflowPlanningOrchestrator:
+    """Enforce planning preconditions around stateless domain services."""
+
     def __init__(
         self,
         persistence: WorkflowPersistenceService,
@@ -57,6 +67,8 @@ class WorkflowPlanningOrchestrator:
         approval_service: object,
         transformation_compiler: object,
     ) -> None:
+        """Bind persistence and the injected discovery/compilation boundaries."""
+
         self.persistence = persistence
         self.discovery_resolver = discovery_resolver
         self.mapping_service = mapping_service
@@ -71,6 +83,8 @@ class WorkflowPlanningOrchestrator:
         actor_reference: str | None,
         request_id: str | None,
     ) -> dict[str, object]:
+        """Build the audit and idempotency context passed to persistence."""
+
         return {
             "idempotency_key": idempotency_key,
             "actor_type": actor_type,
@@ -84,6 +98,8 @@ class WorkflowPlanningOrchestrator:
         expected_version: int,
         state: MigrationWorkflowStatus,
     ) -> None:
+        """Reject a current-version command that is unavailable in ``state``."""
+
         # Stale calls are deferred to repository idempotency/concurrency handling,
         # which preserves exact replays after a successful state transition.
         if workflow.version == expected_version and workflow.status is not state:
@@ -94,6 +110,8 @@ class WorkflowPlanningOrchestrator:
         workflow_id: UUID,
         artifact_type: WorkflowArtifactType,
     ) -> WorkflowArtifact:
+        """Load the latest artifact of a required type or fail the operation."""
+
         artifact = self.persistence.get_latest_artifact(workflow_id, artifact_type)
         if artifact is None:
             raise WorkflowRequiredArtifactError()
@@ -107,12 +125,16 @@ class WorkflowPlanningOrchestrator:
         *,
         require_latest: bool,
     ) -> WorkflowArtifact:
+        """Validate an artifact's ownership, type, and optional latest-version rule."""
+
         artifact = self.persistence.get_artifact(workflow_id, artifact_version)
         if artifact is None:
             raise WorkflowRequiredArtifactError()
         if artifact.artifact_type is not artifact_type:
             raise WorkflowStaleArtifactReferenceError()
         if require_latest:
+            # A valid but superseded artifact must not cross an approval or
+            # execution boundary for a current-version command.
             latest = self.persistence.get_latest_artifact(workflow_id, artifact_type)
             if latest is None or latest.artifact_version != artifact_version:
                 raise WorkflowStaleArtifactReferenceError()
@@ -129,6 +151,8 @@ class WorkflowPlanningOrchestrator:
         actor_reference: str | None,
         request_id: str | None,
     ) -> WorkflowPlanningResult:
+        """Discover one workflow relation and durably record canonical metadata."""
+
         workflow = self.persistence.get_workflow(workflow_id)
         self._require_current_state(workflow, expected_version, MigrationWorkflowStatus.DRAFT)
         relation = workflow.source_relation if source else workflow.target_relation
@@ -149,6 +173,8 @@ class WorkflowPlanningOrchestrator:
             if source
             else WorkflowArtifactType.SOURCE_DISCOVERY
         )
+        # Discovery can occur in either order.  The workflow advances only when
+        # both independently persisted snapshots are present.
         advance = self.persistence.get_latest_artifact(workflow_id, counterpart_type) is not None
         digest = request_hash(
             "WORKFLOW_DISCOVER_SOURCE" if source else "WORKFLOW_DISCOVER_TARGET",
@@ -187,9 +213,13 @@ class WorkflowPlanningOrchestrator:
         )
 
     def discover_source(self, workflow_id: UUID, **command) -> WorkflowPlanningResult:
+        """Discover and persist the source relation configured on the workflow."""
+
         return self._discover(workflow_id, source=True, **command)
 
     def discover_target(self, workflow_id: UUID, **command) -> WorkflowPlanningResult:
+        """Discover and persist the target relation configured on the workflow."""
+
         return self._discover(workflow_id, source=False, **command)
 
     def generate_mapping(
@@ -202,6 +232,8 @@ class WorkflowPlanningOrchestrator:
         actor_reference: str | None,
         request_id: str | None,
     ) -> WorkflowPlanningResult:
+        """Generate a proposal from the latest two discovery artifacts."""
+
         workflow = self.persistence.get_workflow(workflow_id)
         self._require_current_state(
             workflow, expected_version, MigrationWorkflowStatus.DISCOVERED
@@ -255,6 +287,8 @@ class WorkflowPlanningOrchestrator:
         actor_reference: str | None,
         request_id: str | None,
     ) -> WorkflowPlanningResult:
+        """Apply human decisions to the referenced latest mapping proposal."""
+
         workflow = self.persistence.get_workflow(workflow_id)
         self._require_current_state(
             workflow, expected_version, MigrationWorkflowStatus.MAPPING_PROPOSED
@@ -281,6 +315,8 @@ class WorkflowPlanningOrchestrator:
             )
         except (TypeError, ValueError):
             raise WorkflowMappingApprovalRequiredError() from None
+        # Preview and execution require a complete human decision boundary;
+        # pending-only or empty approval artifacts are not sufficient.
         if any(
             item.status is MappingApprovalStatus.PENDING for item in approved.approvals
         ) or not approved.approved_mappings:
@@ -325,9 +361,13 @@ class WorkflowPlanningOrchestrator:
         actor_reference: str | None,
         request_id: str | None,
     ) -> WorkflowPlanningResult:
+        """Compile and persist SQL from a referenced approved mapping artifact."""
+
         workflow = self.persistence.get_workflow(workflow_id)
         if workflow.version == expected_version and workflow.status is not MigrationWorkflowStatus.MAPPING_APPROVED:
             raise WorkflowMappingApprovalRequiredError()
+        # Bind the preview to immutable approved evidence rather than accepting
+        # mappings or SQL directly from the client.
         approved_artifact = self._referenced_artifact(
             workflow_id,
             approved_mapping_artifact_version,

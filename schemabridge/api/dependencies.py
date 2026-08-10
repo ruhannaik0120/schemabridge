@@ -1,4 +1,10 @@
-"""Lazy production dependency hooks for API routes."""
+"""Construct request services at the FastAPI dependency boundary.
+
+Dependencies keep routes focused on HTTP translation while delaying imports,
+profile resolution, and connector construction until an operation needs them.
+The durable repository is application-owned; lightweight orchestration objects
+are assembled per request around that shared repository.
+"""
 
 from collections.abc import Callable
 
@@ -7,6 +13,8 @@ from fastapi import Depends, Request
 from .errors import ApiError
 
 def get_profile_resolver() -> Callable:
+    """Return the named-profile parser without reading configuration yet."""
+
     from schemabridge.services.profile_registry import ProfileRegistry
 
     return ProfileRegistry.from_json
@@ -19,24 +27,32 @@ def get_schema_discovery_service() -> Callable:
 
 
 def _resolve_profile_database_service(profile_id: str):
+    """Resolve one profile to the cached, safety-bounded database service."""
+
     from schemabridge.services.database_service import get_database_service
 
     return get_database_service(profile_id)
 
 
 def get_schema_mapping_service():
+    """Build the deterministic schema-mapping domain service."""
+
     from schemabridge.services.schema_mapping import SchemaMappingService
 
     return SchemaMappingService()
 
 
 def get_mapping_approval_service():
+    """Build the service that applies explicit human mapping decisions."""
+
     from schemabridge.services.mapping_approval import MappingApprovalService
 
     return MappingApprovalService()
 
 
 def get_validation_execution_service():
+    """Build the paired source/target aggregate-validation executor."""
+
     from schemabridge.services.validation_execution import MigrationValidationExecutionService
 
     return MigrationValidationExecutionService()
@@ -49,18 +65,24 @@ def get_validation_execution_service_factory() -> Callable:
 
 
 def get_transformation_compiler():
+    """Build the Snowflake compiler used for preview and verified execution."""
+
     from schemabridge.services.transformation_sql import SnowflakeTransformationSqlCompiler
 
     return SnowflakeTransformationSqlCompiler()
 
 
 def get_validation_compiler() -> Callable:
+    """Return the pure function that generates paired validation queries."""
+
     from schemabridge.services.validation_sql import compile_validation_sql
 
     return compile_validation_sql
 
 
 def get_database_service_factory():
+    """Return the profile-bound database-service resolver."""
+
     from schemabridge.services.database_service import get_database_service
 
     return get_database_service
@@ -69,6 +91,8 @@ def get_database_service_factory():
 def get_migration_execution_service(
     database_service_factory=Depends(get_database_service_factory),
 ):
+    """Build the write-gated Snowflake execution boundary."""
+
     from schemabridge.services.migration_execution import ProfileBoundMigrationExecutionService
 
     return ProfileBoundMigrationExecutionService(database_service_factory)
@@ -83,6 +107,8 @@ def build_workflow_repository(config):
 
 
 def get_workflow_repository(request: Request):
+    """Return durable persistence or fail clearly when it is not configured."""
+
     repository = getattr(request.app.state, "workflow_repository", None)
     if repository is None:
         raise ApiError(
@@ -108,6 +134,8 @@ def get_workflow_planning_orchestrator(
     approval_service=Depends(get_mapping_approval_service),
     transformation_compiler=Depends(get_transformation_compiler),
 ):
+    """Assemble planning coordination over request-scoped dependencies."""
+
     from schemabridge.services.workflow_orchestration import WorkflowPlanningOrchestrator
 
     return WorkflowPlanningOrchestrator(
@@ -124,6 +152,8 @@ def get_workflow_execution_orchestrator(
     transformation_compiler=Depends(get_transformation_compiler),
     execution_service=Depends(get_migration_execution_service),
 ):
+    """Assemble approval-gated execution coordination."""
+
     from schemabridge.services.workflow_execution import WorkflowExecutionOrchestrator
 
     return WorkflowExecutionOrchestrator(
@@ -138,6 +168,8 @@ def get_workflow_validation_orchestrator(
     validation_compiler=Depends(get_validation_compiler),
     validation_execution_service=Depends(get_validation_execution_service),
 ):
+    """Assemble durable validation and reconciliation coordination."""
+
     from schemabridge.services.workflow_validation import WorkflowValidationOrchestrator
 
     return WorkflowValidationOrchestrator(

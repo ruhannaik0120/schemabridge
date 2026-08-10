@@ -1,4 +1,10 @@
-"""Profile-bound execution of one compiler-produced Snowflake transformation."""
+"""Execute one compiler-produced transformation through a Snowflake profile.
+
+This boundary validates server-side profile identity and write authorization,
+accepts only Snowflake ``INSERT ... SELECT`` previews, and converts remote
+results into a small disposition contract.  Raw driver output and exceptions do
+not cross into workflow artifacts or public errors.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +23,8 @@ from schemabridge.validation.sql_guard import validate_query
 
 
 class TargetExecutionDisposition(str, Enum):
+    """Describe whether the remote transaction outcome can be proven."""
+
     SUCCEEDED = "SUCCEEDED"
     CONFIRMED_FAILED_ROLLED_BACK = "CONFIRMED_FAILED_ROLLED_BACK"
     OUTCOME_UNCERTAIN = "OUTCOME_UNCERTAIN"
@@ -24,6 +32,8 @@ class TargetExecutionDisposition(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class PreparedMigrationTarget:
+    """Credential-free execution context resolved from a named profile."""
+
     profile_id: str
     database: str
     connector_type: str
@@ -33,6 +43,8 @@ class PreparedMigrationTarget:
 
 @dataclass(frozen=True, slots=True)
 class TargetExecutionResult:
+    """Sanitized result consumed by durable execution orchestration."""
+
     disposition: TargetExecutionDisposition
     affected_rows: int | None = None
     failure_category: str | None = None
@@ -42,6 +54,8 @@ class ProfileBoundMigrationExecutionService:
     """Resolve a write-enabled target profile and discard unsafe driver output."""
 
     def __init__(self, database_service_factory: Callable[[str], object]) -> None:
+        """Accept a profile resolver so preparation remains testable and lazy."""
+
         self.database_service_factory = database_service_factory
 
     def prepare(
@@ -52,6 +66,12 @@ class ProfileBoundMigrationExecutionService:
         target_system: str,
         timeout_seconds: int | None,
     ) -> PreparedMigrationTarget:
+        """Resolve and validate a write-enabled Snowflake execution target.
+
+        Raises a workflow-safe domain error when the profile is missing,
+        mismatched, read-only, non-Snowflake, or otherwise malformed.
+        """
+
         try:
             service = self.database_service_factory(profile_id)
             context = service.migration_execution_context(timeout_seconds)
@@ -59,6 +79,8 @@ class ProfileBoundMigrationExecutionService:
             raise WorkflowTargetProfileUnavailableError() from None
         if context.get("profile_id") != profile_id:
             raise WorkflowTargetProfileUnavailableError()
+        # Write authorization is operator-controlled profile state, never a
+        # property a client can grant in an execution request.
         if context.get("write_enabled") is not True:
             raise WorkflowTargetProfileNotWriteCapableError()
         if (
@@ -93,6 +115,8 @@ class ProfileBoundMigrationExecutionService:
 
     @staticmethod
     def validate_preview(preview: GeneratedTransformationSql) -> None:
+        """Require a compiler-shaped Snowflake insert-select accepted by the guard."""
+
         if (
             not isinstance(preview, GeneratedTransformationSql)
             or preview.dialect is not SqlDialect.SNOWFLAKE
@@ -109,6 +133,8 @@ class ProfileBoundMigrationExecutionService:
         target: PreparedMigrationTarget,
         preview: GeneratedTransformationSql,
     ) -> TargetExecutionResult:
+        """Execute the verified statement and return only sanitized evidence."""
+
         self.validate_preview(preview)
         if preview.target_relation[0] != target.database:
             raise WorkflowUnsafeGeneratedStatementError()
@@ -120,6 +146,8 @@ class ProfileBoundMigrationExecutionService:
                 timeout_seconds=target.timeout_seconds,
             )
         except Exception:
+            # Once control crossed the driver boundary, an exception alone does
+            # not prove rollback; retrying could duplicate a committed write.
             return TargetExecutionResult(
                 TargetExecutionDisposition.OUTCOME_UNCERTAIN,
                 failure_category="TARGET_EXECUTION_INTERRUPTED",

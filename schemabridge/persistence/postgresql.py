@@ -1,4 +1,10 @@
-"""Transactional PostgreSQL implementation of the workflow repository."""
+"""Implement the durable workflow repository with PostgreSQL transactions.
+
+Each command opens a short-lived connection and groups idempotency lookup,
+optimistic version checks, row locking, workflow mutation, immutable evidence,
+and audit insertion in one transaction.  Database and driver failures are
+collapsed to persistence-domain errors before leaving this boundary.
+"""
 from __future__ import annotations
 import json
 from datetime import timezone
@@ -17,10 +23,16 @@ _ATT_COLUMNS="attempt_id,workflow_id,approved_mapping_artifact_version,transform
 _VAL_COLUMNS="run_id,workflow_id,execution_attempt_id,execution_evidence_artifact_version,approved_mapping_artifact_version,validation_preview_artifact_version,source_profile_id,target_profile_id,validation_fingerprint,status,timeout_seconds,claimed_at,actor_type,idempotency_key,actor_reference,running_at,completed_at,duration_ms,evidence_artifact_id,failure_category"
 
 class PostgreSQLWorkflowRepository:
+ """Persist workflow control-plane records with transactional guarantees."""
+
  def __init__(self,config:ControlPlaneConfig,*,connect=None):
+  """Bind validated control-plane configuration and an optional test connector."""
+
   if not isinstance(config,ControlPlaneConfig) or not config.enabled:raise ValueError("Control-plane persistence is not configured.")
   self._config=config;self._connect=connect
  def _open(self):
+  """Open a transaction-capable connection without exposing DSN failures."""
+
   if self._connect is not None:return self._connect(self._config.dsn)
   try:
    import psycopg
@@ -51,6 +63,10 @@ class PostgreSQLWorkflowRepository:
  def _validation_run(row):
   return WorkflowValidationRun(run_id=row[0],workflow_id=row[1],execution_attempt_id=row[2],execution_evidence_artifact_version=row[3],approved_mapping_artifact_version=row[4],validation_preview_artifact_version=row[5],source_profile_id=row[6],target_profile_id=row[7],validation_fingerprint=row[8],status=WorkflowValidationRunStatus(row[9]),timeout_seconds=row[10],claimed_at=row[11].astimezone(timezone.utc),actor_type=AuditActorType(row[12]),idempotency_key=row[13],actor_reference=row[14],running_at=row[15].astimezone(timezone.utc) if row[15] else None,completed_at=row[16].astimezone(timezone.utc) if row[16] else None,duration_ms=row[17],evidence_artifact_id=row[18],failure_category=row[19])
  def _idem(self,cursor,scope,key,digest):
+  """Serialize one idempotency scope and return its recorded result if present."""
+
+  # The transaction-level advisory lock closes the race between checking a key
+  # and inserting its first result, including when no row exists to lock yet.
   cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",(f"{scope}:{key}",))
   cursor.execute("SELECT request_sha256, workflow_id, result_reference FROM migration_idempotency WHERE command_scope=%s AND idempotency_key=%s FOR UPDATE",(scope,key));row=cursor.fetchone()
   if row is None:return None
@@ -66,6 +82,8 @@ class PostgreSQLWorkflowRepository:
   try:connection.close()
   except Exception:return None
  def create_workflow(self,workflow,event,*,idempotency_key,request_hash):
+  """Atomically create the workflow, audit root, and idempotency result."""
+
   if event.workflow_id!=workflow.workflow_id:raise WorkflowPersistenceError()
   connection=self._open()
   try:
@@ -90,6 +108,8 @@ class PostgreSQLWorkflowRepository:
   except Exception:raise WorkflowPersistenceError() from None
   finally:self._close(connection)
  def transition_status(self,workflow_id,expected_version,new_status,event,*,last_error_code,idempotency_key,request_hash):
+  """Apply an optimistic status change while holding the workflow row lock."""
+
   if event.workflow_id!=workflow_id:raise WorkflowPersistenceError()
   connection=self._open();scope=f"{workflow_id}:STATUS"
   try:
@@ -113,6 +133,8 @@ class PostgreSQLWorkflowRepository:
  def mark_failed(self,workflow_id,expected_version,event,**kwargs):return self.transition_status(workflow_id,expected_version,MigrationWorkflowStatus.FAILED,event,**kwargs)
  def cancel_workflow(self,workflow_id,expected_version,event,**kwargs):return self.transition_status(workflow_id,expected_version,MigrationWorkflowStatus.CANCELLED,event,**kwargs)
  def append_artifact(self,workflow_id,expected_version,artifact,event,*,idempotency_key,request_hash):
+  """Atomically append immutable evidence and advance both version counters."""
+
   if artifact.workflow_id!=workflow_id:raise WorkflowArtifactValidationError()
   if event.workflow_id!=workflow_id or event.artifact_id!=artifact.artifact_id or event.artifact_type is not artifact.artifact_type:raise WorkflowPersistenceError()
   connection=self._open();scope=f"{workflow_id}:ARTIFACT"
@@ -135,6 +157,8 @@ class PostgreSQLWorkflowRepository:
   except Exception:raise WorkflowPersistenceError() from None
   finally:self._close(connection)
  def append_artifact_operation(self,workflow_id,expected_version,artifact,artifact_event,*,new_status,transition_event,idempotency_key,request_hash):
+  """Append evidence and an optional state transition in one transaction."""
+
   if artifact.workflow_id!=workflow_id:raise WorkflowArtifactValidationError()
   if artifact_event.workflow_id!=workflow_id or artifact_event.artifact_id!=artifact.artifact_id or artifact_event.artifact_type is not artifact.artifact_type:raise WorkflowPersistenceError()
   if (new_status is None)!=(transition_event is None):raise WorkflowPersistenceError()
@@ -203,6 +227,8 @@ class PostgreSQLWorkflowRepository:
   except Exception:raise WorkflowPersistenceError() from None
   finally:self._close(connection)
  def claim_execution_attempt(self,workflow_id,expected_version,attempt,event,*,idempotency_key,request_hash):
+  """Durably claim execution and move the workflow to ``EXECUTING``."""
+
   if attempt.workflow_id!=workflow_id or attempt.status is not MigrationExecutionAttemptStatus.CLAIMED:raise WorkflowPersistenceError()
   if event.workflow_id!=workflow_id or event.previous_status is not MigrationWorkflowStatus.EXECUTION_READY or event.new_status is not MigrationWorkflowStatus.EXECUTING:raise WorkflowPersistenceError()
   connection=self._open();scope=f"{workflow_id}:EXECUTION"
@@ -230,6 +256,8 @@ class PostgreSQLWorkflowRepository:
   except Exception:raise WorkflowPersistenceError() from None
   finally:self._close(connection)
  def mark_execution_running(self,attempt_id,running_at):
+  """Let exactly one claimant advance an execution attempt to running."""
+
   connection=self._open()
   try:
    with connection.transaction():
@@ -245,6 +273,8 @@ class PostgreSQLWorkflowRepository:
   except Exception:raise WorkflowPersistenceError() from None
   finally:self._close(connection)
  def complete_execution_attempt(self,workflow_id,expected_version,attempt_id,evidence,artifact,artifact_event,new_status,transition_event):
+  """Commit terminal attempt, evidence, workflow, and audit updates together."""
+
   if evidence.attempt_id!=attempt_id or evidence.workflow_id!=workflow_id or artifact.workflow_id!=workflow_id or artifact.artifact_type is not WorkflowArtifactType.EXECUTION_EVIDENCE:raise WorkflowPersistenceError()
   if artifact_event.artifact_id!=artifact.artifact_id or transition_event.workflow_id!=workflow_id:raise WorkflowPersistenceError()
   connection=self._open()
@@ -295,6 +325,8 @@ class PostgreSQLWorkflowRepository:
   except Exception:raise WorkflowPersistenceError() from None
   finally:self._close(connection)
  def claim_validation_run(self,workflow_id,expected_version,run,artifact,artifact_event,transition_event,*,idempotency_key,request_hash):
+  """Persist the validation plan and claim its run in one transaction."""
+
   if run.workflow_id!=workflow_id or run.status is not WorkflowValidationRunStatus.CLAIMED or artifact.workflow_id!=workflow_id or artifact.artifact_type is not WorkflowArtifactType.VALIDATION_PREVIEW:raise WorkflowPersistenceError()
   if artifact_event.artifact_id!=artifact.artifact_id or transition_event.previous_status is not MigrationWorkflowStatus.EXECUTED or transition_event.new_status is not MigrationWorkflowStatus.VALIDATING:raise WorkflowPersistenceError()
   connection=self._open();scope=f"{workflow_id}:VALIDATION"
@@ -325,6 +357,8 @@ class PostgreSQLWorkflowRepository:
   except Exception:raise WorkflowPersistenceError() from None
   finally:self._close(connection)
  def mark_validation_running(self,run_id,running_at):
+  """Let exactly one claimant advance a validation run to running."""
+
   connection=self._open()
   try:
    with connection.transaction():
@@ -340,6 +374,8 @@ class PostgreSQLWorkflowRepository:
   except Exception:raise WorkflowPersistenceError() from None
   finally:self._close(connection)
  def complete_validation_run(self,workflow_id,expected_version,run_id,report,artifact,artifact_event,new_status,transition_event,*,completed_at,failure_category):
+  """Commit validation outcome, optional evidence, state, and audit atomically."""
+
   if (artifact is None)!=(report is None) or (artifact_event is None)!=(artifact is None):raise WorkflowPersistenceError()
   if artifact is not None and (artifact.workflow_id!=workflow_id or artifact.artifact_type is not WorkflowArtifactType.VALIDATION_EXECUTION_REPORT or artifact_event.artifact_id!=artifact.artifact_id):raise WorkflowPersistenceError()
   connection=self._open()

@@ -1,4 +1,10 @@
-"""Immutable, explainable schema-mapping suggestion models."""
+"""Define immutable mapping, approval, expression, and generated-SQL models.
+
+These values carry deterministic evidence from discovery through human review
+and compilation.  Construction-time invariants preserve one-to-one target
+ownership, explicit risky overrides, safe scalar parameters, and complete
+lineage back to the approved plan version.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +17,8 @@ from schemabridge.models.metadata import CanonicalType, _MetadataModel, _json_va
 
 
 class ColumnCompatibility(str, Enum):
+    """Classify the expected safety of a canonical type conversion."""
+
     EXACT = "EXACT"
     SAFE = "SAFE"
     LOSSY = "LOSSY"
@@ -19,12 +27,16 @@ class ColumnCompatibility(str, Enum):
 
 
 class MappingDecision(str, Enum):
+    """Describe whether the mapper found a unique suggestion or needs review."""
+
     SUGGESTED = "SUGGESTED"
     AMBIGUOUS = "AMBIGUOUS"
     UNMATCHED = "UNMATCHED"
 
 
 class MappingApprovalStatus(str, Enum):
+    """Record the human disposition of one source-column mapping."""
+
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
@@ -32,6 +44,8 @@ class MappingApprovalStatus(str, Enum):
 
 
 class TransformationExpressionType(str, Enum):
+    """Enumerate the bounded expression grammar accepted by the compiler."""
+
     SOURCE_COLUMN = "SOURCE_COLUMN"
     LITERAL = "LITERAL"
     CAST = "CAST"
@@ -41,11 +55,15 @@ class TransformationExpressionType(str, Enum):
 
 
 class SqlDialect(str, Enum):
+    """Identify the dialect associated with a generated statement."""
+
     SNOWFLAKE = "SNOWFLAKE"
     POSTGRESQL = "POSTGRESQL"
 
 
 class TransformationStatementType(str, Enum):
+    """Distinguish a projection preview from an executable insert-select."""
+
     SELECT = "SELECT"
     INSERT_SELECT = "INSERT_SELECT"
 
@@ -57,6 +75,8 @@ def _validate_fixed_code(value: str, field_name: str) -> None:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MappingEvidence(_MetadataModel):
+    """Explain one fixed scoring contribution behind a mapping suggestion."""
+
     code: str
     explanation: str
     contribution: float | None = None
@@ -78,6 +98,8 @@ class MappingEvidence(_MetadataModel):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TableMappingIdentity(_MetadataModel):
+    """Identify the source or target table captured by a mapping artifact."""
+
     catalog_name: str | None
     schema_name: str
     table_name: str
@@ -95,6 +117,8 @@ class TableMappingIdentity(_MetadataModel):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ColumnMappingSuggestion(_MetadataModel):
+    """Represent one deterministic suggestion or unresolved source column."""
+
     source_column: str
     target_column: str | None
     confidence: float
@@ -129,6 +153,8 @@ class ColumnMappingSuggestion(_MetadataModel):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TransformationExpression(_MetadataModel):
+    """Describe a validated node in the compiler's bounded expression tree."""
+
     expression_type: TransformationExpressionType
     source_columns: tuple[str, ...] = ()
     literal_value: str | int | float | bool | None = None
@@ -192,6 +218,8 @@ class TransformationExpression(_MetadataModel):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MappingReviewDecision(_MetadataModel):
+    """Capture one reviewer choice, optional transformation, and override reason."""
+
     source_column: str
     status: MappingApprovalStatus
     target_column: str | None = None
@@ -225,6 +253,8 @@ class MappingReviewDecision(_MetadataModel):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ColumnMappingApproval(_MetadataModel):
+    """Preserve original evidence together with the final reviewer disposition."""
+
     source_column: str
     target_column: str | None
     status: MappingApprovalStatus
@@ -295,6 +325,8 @@ class ColumnMappingApproval(_MetadataModel):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TableMappingPlan(_MetadataModel):
+    """Hold the complete deterministic proposal for one source/target table pair."""
+
     source_table: TableMappingIdentity
     target_table: TableMappingIdentity
     suggestions: tuple[ColumnMappingSuggestion, ...]
@@ -343,6 +375,8 @@ class TableMappingPlan(_MetadataModel):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ApprovedTableMappingPlan(_MetadataModel):
+    """Hold complete human decisions and the exact compiler-approved subset."""
+
     source_table: TableMappingIdentity
     target_table: TableMappingIdentity
     approvals: tuple[ColumnMappingApproval, ...]
@@ -400,6 +434,8 @@ class ApprovedTableMappingPlan(_MetadataModel):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GeneratedTransformationSql(_MetadataModel):
+    """Carry generated SQL, bound parameters, relation lineage, and plan version."""
+
     dialect: SqlDialect
     statement_type: TransformationStatementType
     sql: str
@@ -440,6 +476,8 @@ class GeneratedTransformationSql(_MetadataModel):
 
 
 def _safe_literal(value: object) -> bool:
+    """Return whether a value can cross the driver boundary as a bound scalar."""
+
     from datetime import date, datetime, time
     from decimal import Decimal
     return (

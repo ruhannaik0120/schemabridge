@@ -1,4 +1,4 @@
-"""Explicit immutable API platform configuration."""
+"""Load immutable HTTP-platform and control-plane startup settings."""
 
 from dataclasses import dataclass, field
 
@@ -10,10 +10,14 @@ except ModuleNotFoundError:
 
 @dataclass(frozen=True, slots=True)
 class ApiSettings:
+    """Hold request-size policy and optional durable persistence configuration."""
+
     max_request_body_bytes: int = 1_048_576
     control_plane: ControlPlaneConfig = field(default_factory=ControlPlaneConfig.from_environment)
 
     def __post_init__(self) -> None:
+        """Reject invalid limits or an unvalidated control-plane value."""
+
         if (
             isinstance(self.max_request_body_bytes, bool)
             or not isinstance(self.max_request_body_bytes, int)

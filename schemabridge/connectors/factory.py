@@ -1,4 +1,9 @@
-"""Factory for creating database connectors based on configuration."""
+"""Select concrete connectors while keeping optional drivers lazy.
+
+The registry supports generic demo, MySQL, PostgreSQL, Snowflake, and SQL Server
+access.  Durable migration execution applies a narrower policy elsewhere and
+requires Snowflake; registration here does not imply durable execution support.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +21,7 @@ SUPPORTED_CONNECTORS: dict[str, str] = {
 
 
 class ConnectorFactory:
-    """Instantiate the appropriate connector based on configuration."""
+    """Instantiate one connector from legacy config or an immutable profile."""
 
     @staticmethod
     def supported_connectors() -> tuple[str, ...]:
@@ -60,7 +65,11 @@ class ConnectorFactory:
 
     @staticmethod
     def create_for_profile(profile: object) -> DatabaseConnector:
-        """Build a connector bound exclusively to an immutable profile."""
+        """Build a connector bound exclusively to an immutable named profile.
+
+        Binding lets downstream services verify that a reused connector cannot
+        silently operate with credentials from a different profile.
+        """
 
         # Keep this import local: ConnectionProfile reads the connector-name
         # registry from this module while it is imported.

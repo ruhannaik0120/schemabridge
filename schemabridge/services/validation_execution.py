@@ -1,4 +1,10 @@
-"""Controlled execution of paired PostgreSQL and Snowflake validation queries."""
+"""Execute paired generated validation queries and reconcile their metrics.
+
+The service resolves source and target profiles independently, verifies the
+expected connector dialects, runs read-only aggregate queries, and normalizes
+their single rows before reconciliation.  Driver exceptions are replaced with
+sanitized domain failures.
+"""
 
 from __future__ import annotations
 
@@ -14,25 +20,39 @@ from schemabridge.services.validation_sql import compile_validation_sql
 
 
 class ValidationApprovalRequiredError(ValueError):
-    pass
+    """Raised when a caller has not explicitly authorized validation execution."""
 
 
 class ValidationExecutionError(ValueError):
-    pass
+    """Raised when compilation, profile resolution, or remote execution fails."""
 
 
 class MalformedValidationExecutionResultError(ValueError):
-    pass
+    """Raised when an aggregate query does not return one unambiguous row."""
 
 
 class MigrationValidationExecutionService:
+    """Run a generated PostgreSQL/Snowflake validation pair synchronously."""
+
     def __init__(self, database_service_factory=None):
+        """Accept an optional profile resolver for dependency injection and tests."""
+
         self.database_service_factory = database_service_factory
 
     def run(
         self,
         request: MigrationValidationExecutionRequest,
     ) -> MigrationValidationExecutionReport:
+        """Execute an approved request and return reconciled aggregate evidence.
+
+        Raises:
+            ValidationApprovalRequiredError: If explicit approval is absent.
+            ValidationExecutionError: If compilation, profiles, or either query
+                cannot be completed safely.
+            MalformedValidationExecutionResultError: If either query does not
+                produce exactly one aggregate row with unique column names.
+        """
+
         if (
             not isinstance(request, MigrationValidationExecutionRequest)
             or request.explicitly_approved is not True
@@ -71,6 +91,8 @@ class MigrationValidationExecutionService:
                 raise ValidationExecutionError("Validation compilation failed.")
 
         resolver = self.database_service_factory or get_database_service
+        # Resolve and execute each side separately because the databases have
+        # different profiles, dialects, permissions, and failure domains.
         try:
             source = resolver(request.source_profile_id)
             context = getattr(source, "validation_execution_context", None)
@@ -129,6 +151,8 @@ class MigrationValidationExecutionService:
             ) from None
 
         def row(result) -> dict[str, object]:
+            """Normalize one aggregate row into a case-insensitive metric map."""
+
             rows = getattr(result, "rows", None)
             columns = getattr(result, "columns", None)
             if not isinstance(rows, (tuple, list)) or not isinstance(
@@ -137,6 +161,8 @@ class MigrationValidationExecutionService:
                 raise MalformedValidationExecutionResultError(
                     "Malformed validation execution result."
                 )
+            # Generated aggregate queries have no GROUP BY and therefore must
+            # produce exactly one row; accepting more would misalign evidence.
             if len(rows) != 1:
                 raise MalformedValidationExecutionResultError(
                     "Malformed validation execution result."

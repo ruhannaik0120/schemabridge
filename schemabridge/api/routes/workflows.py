@@ -1,4 +1,10 @@
-"""Durable migration workflow command and query routes."""
+"""Expose the durable, governed migration workflow over HTTP.
+
+Routes translate API commands into planning, execution, validation, and
+persistence service calls.  Mutation requests carry idempotency and optimistic
+version context; responses expose the resulting workflow plus immutable
+artifacts or attempt records without leaking repository or driver details.
+"""
 
 from __future__ import annotations
 
@@ -107,6 +113,10 @@ _ERRORS = {
 
 
 def _raise_workflow_error(error: Exception) -> None:
+    """Translate a known domain failure into a stable, sanitized API error."""
+
+    # Mapping concrete domain failures here keeps repository and connector
+    # details out of both public messages and individual route handlers.
     if isinstance(error, WorkflowNotFoundError):
         raise ApiError(404, "WORKFLOW_NOT_FOUND", "The requested workflow is unavailable.") from None
     if isinstance(error, WorkflowIdempotencyConflictError):
@@ -159,6 +169,8 @@ def _raise_workflow_error(error: Exception) -> None:
 
 
 def _request_id(request: Request) -> str | None:
+    """Read the middleware-vetted request identifier for audit correlation."""
+
     value = getattr(request.state, "request_id", None)
     return value if isinstance(value, str) else None
 
@@ -177,6 +189,8 @@ async def create_workflow(
     idempotency_key: IdempotencyKey,
     service=Depends(get_workflow_persistence_service),
 ) -> MigrationWorkflowSchema:
+    """Create the durable workflow root and its initial audit event."""
+
     try:
         result = service.create_workflow(
             display_name=command.display_name,
@@ -208,6 +222,8 @@ async def get_workflow(
     workflow_id: UUID,
     service=Depends(get_workflow_persistence_service),
 ) -> MigrationWorkflowSchema:
+    """Return the current control-plane view of one workflow."""
+
     try:
         return workflow_to_api(service.get_workflow(workflow_id))
     except Exception as error:
@@ -216,6 +232,8 @@ async def get_workflow(
 
 
 def _planning_context(command, request: Request, idempotency_key: str) -> dict:
+    """Collect concurrency and audit fields shared by planning commands."""
+
     return {
         "expected_version": command.expected_version,
         "idempotency_key": idempotency_key,
@@ -240,6 +258,8 @@ async def discover_workflow_source(
     idempotency_key: IdempotencyKey,
     orchestrator=Depends(get_workflow_planning_orchestrator),
 ) -> WorkflowDiscoveryOperationResponse:
+    """Discover the configured source relation and persist its metadata artifact."""
+
     try:
         result = orchestrator.discover_source(
             workflow_id, **_planning_context(command, request, idempotency_key)
@@ -269,6 +289,8 @@ async def discover_workflow_target(
     idempotency_key: IdempotencyKey,
     orchestrator=Depends(get_workflow_planning_orchestrator),
 ) -> WorkflowDiscoveryOperationResponse:
+    """Discover the configured target relation and persist its metadata artifact."""
+
     try:
         result = orchestrator.discover_target(
             workflow_id, **_planning_context(command, request, idempotency_key)
@@ -298,6 +320,8 @@ async def generate_workflow_mapping(
     idempotency_key: IdempotencyKey,
     orchestrator=Depends(get_workflow_planning_orchestrator),
 ) -> WorkflowMappingOperationResponse:
+    """Generate a proposal from the latest source and target discoveries."""
+
     try:
         result = orchestrator.generate_mapping(
             workflow_id, **_planning_context(command, request, idempotency_key)
@@ -327,6 +351,8 @@ async def approve_workflow_mapping(
     idempotency_key: IdempotencyKey,
     orchestrator=Depends(get_workflow_planning_orchestrator),
 ) -> WorkflowApprovalOperationResponse:
+    """Apply review decisions to the referenced proposal and persist approval."""
+
     context = _planning_context(command, request, idempotency_key)
     try:
         result = orchestrator.approve_mapping(
@@ -362,6 +388,8 @@ async def preview_workflow_transformation(
     idempotency_key: IdempotencyKey,
     orchestrator=Depends(get_workflow_planning_orchestrator),
 ) -> WorkflowTransformationPreviewOperationResponse:
+    """Compile and persist SQL tied to a specific approved mapping version."""
+
     try:
         result = orchestrator.preview_transformation(
             workflow_id,
@@ -397,6 +425,8 @@ async def execute_workflow_transformation(
     idempotency_key: IdempotencyKey,
     orchestrator=Depends(get_workflow_execution_orchestrator),
 ) -> WorkflowExecutionOperationResponse:
+    """Execute the latest verified preview through the claimed target boundary."""
+
     try:
         result = orchestrator.execute(
             workflow_id,
@@ -432,6 +462,8 @@ async def validate_workflow_migration(
     idempotency_key: IdempotencyKey,
     orchestrator=Depends(get_workflow_validation_orchestrator),
 ) -> WorkflowValidationOperationResponse:
+    """Run durable post-execution aggregate validation and reconciliation."""
+
     try:
         result = orchestrator.validate(
             workflow_id,
@@ -473,6 +505,8 @@ async def transition_workflow(
     idempotency_key: IdempotencyKey,
     service=Depends(get_workflow_persistence_service),
 ) -> MigrationWorkflowSchema:
+    """Apply an explicitly requested legal administrative state transition."""
+
     try:
         result = service.transition_status(
             workflow_id,
@@ -493,6 +527,11 @@ async def transition_workflow(
 
 
 def _append_artifact(service, workflow_id: UUID, command, context: dict):
+    """Dispatch the tagged API artifact command to its typed persistence method."""
+
+    # The discriminated request union reaches this helper already validated;
+    # explicit dispatch prevents a client-supplied artifact type string from
+    # selecting an unrelated serializer.
     if isinstance(command, SourceDiscoveryArtifactRequest):
         return service.append_source_discovery(workflow_id, command.expected_version, table_to_domain(command.payload), **context)
     if isinstance(command, TargetDiscoveryArtifactRequest):
@@ -521,6 +560,8 @@ async def append_workflow_artifact(
     idempotency_key: IdempotencyKey,
     service=Depends(get_workflow_persistence_service),
 ) -> WorkflowArtifactAppendResponse:
+    """Append one typed immutable artifact through the persistence boundary."""
+
     context = {
         "idempotency_key": idempotency_key,
         "actor_type": command.actor_type,
@@ -553,6 +594,8 @@ async def list_workflow_artifacts(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     service=Depends(get_workflow_persistence_service),
 ) -> WorkflowArtifactListResponse:
+    """Return an ordered, bounded page of immutable workflow evidence."""
+
     try:
         items = service.list_artifacts(workflow_id, offset=offset, limit=limit)
         return WorkflowArtifactListResponse(
@@ -578,6 +621,8 @@ async def list_workflow_audit_events(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     service=Depends(get_workflow_persistence_service),
 ) -> MigrationAuditEventListResponse:
+    """Return an ordered, bounded page of append-only audit history."""
+
     try:
         items = service.list_audit_events(workflow_id, offset=offset, limit=limit)
         return MigrationAuditEventListResponse(

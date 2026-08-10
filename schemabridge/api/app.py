@@ -1,4 +1,10 @@
-"""Permanent ASGI application factory for SchemaBridge."""
+"""Assemble the SchemaBridge FastAPI application and process resources.
+
+The factory installs the HTTP platform concerns and route groups without
+opening source or target database connections.  Its lifespan owns the optional
+control-plane repository and closes any lazily created connector services at
+shutdown.
+"""
 
 from __future__ import annotations
 
@@ -36,7 +42,11 @@ def _cleanup_services() -> None:
 
 
 def _cleanup_workflow_repository(app: FastAPI) -> None:
+    """Detach and close the application-owned control-plane repository."""
+
     repository = getattr(app.state, "workflow_repository", None)
+    # Detach first so a failed close cannot leave a stale object available to a
+    # request or a second cleanup pass.
     app.state.workflow_repository = None
     close = getattr(repository, "close", None)
     if callable(close):
@@ -49,6 +59,8 @@ def _cleanup_workflow_repository(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    """Initialize optional durable persistence and guarantee orderly cleanup."""
+
     app.state.ready = False
     try:
         settings = getattr(app.state, "settings", None)
@@ -57,6 +69,8 @@ async def _lifespan(app: FastAPI):
         if not all(callable(hook) for hook in REQUIRED_DEPENDENCY_HOOKS):
             raise RuntimeError("Required API dependency hooks are unavailable.")
         if settings.control_plane.enabled:
+            # Repository construction is connection-free.  Individual
+            # operations open their own transactions when a request arrives.
             app.state.workflow_repository = build_workflow_repository(settings.control_plane)
         app.state.ready = True
         yield
@@ -67,9 +81,25 @@ async def _lifespan(app: FastAPI):
 
 
 def create_app(settings: ApiSettings | None = None) -> FastAPI:
+    """Create an independently configured SchemaBridge ASGI application.
+
+    Args:
+        settings: Optional validated settings, primarily useful for isolated
+            tests.  Environment-backed defaults are loaded when omitted.
+
+    Returns:
+        A fully routed FastAPI application whose remote resources remain lazy.
+
+    Raises:
+        TypeError: If ``settings`` is not an :class:`ApiSettings` instance.
+    """
+
     if settings is not None and not isinstance(settings, ApiSettings):
         raise TypeError("settings must be an ApiSettings value.")
     effective_settings = settings if settings is not None else ApiSettings()
+    # Import the heavier route graph only when the factory is invoked.  This
+    # keeps package import and OpenAPI inspection independent of database
+    # drivers, profiles, and live connections.
     from .routes.migrations import router as migrations_router
     from .routes.workflows import router as workflows_router
 

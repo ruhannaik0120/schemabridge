@@ -1,4 +1,9 @@
-"""Immutable durable migration workflow and audit domain models."""
+"""Define immutable workflow state, artifact, transition, and audit models.
+
+These models are shared by API adapters, orchestrators, artifact codecs, and the
+repository.  Validation occurs at construction so malformed state cannot cross
+layer boundaries or be persisted as durable workflow evidence.
+"""
 
 from __future__ import annotations
 
@@ -13,18 +18,51 @@ from uuid import UUID
 
 
 class MigrationWorkflowStatus(str, Enum):
-    DRAFT="DRAFT"; DISCOVERED="DISCOVERED"; MAPPING_PROPOSED="MAPPING_PROPOSED"; MAPPING_APPROVED="MAPPING_APPROVED"
-    EXECUTION_READY="EXECUTION_READY"; EXECUTING="EXECUTING"; EXECUTED="EXECUTED"; EXECUTION_RECOVERY_REQUIRED="EXECUTION_RECOVERY_REQUIRED"
-    VALIDATION_READY="VALIDATION_READY"; VALIDATING="VALIDATING"; VALIDATED="VALIDATED"; VALIDATION_REVIEW_REQUIRED="VALIDATION_REVIEW_REQUIRED"; VALIDATION_RECOVERY_REQUIRED="VALIDATION_RECOVERY_REQUIRED"; FAILED="FAILED"; CANCELLED="CANCELLED"
+    """Represent the current durable phase and recovery disposition."""
+
+    DRAFT = "DRAFT"
+    DISCOVERED = "DISCOVERED"
+    MAPPING_PROPOSED = "MAPPING_PROPOSED"
+    MAPPING_APPROVED = "MAPPING_APPROVED"
+    EXECUTION_READY = "EXECUTION_READY"
+    EXECUTING = "EXECUTING"
+    EXECUTED = "EXECUTED"
+    EXECUTION_RECOVERY_REQUIRED = "EXECUTION_RECOVERY_REQUIRED"
+    VALIDATION_READY = "VALIDATION_READY"
+    VALIDATING = "VALIDATING"
+    VALIDATED = "VALIDATED"
+    VALIDATION_REVIEW_REQUIRED = "VALIDATION_REVIEW_REQUIRED"
+    VALIDATION_RECOVERY_REQUIRED = "VALIDATION_RECOVERY_REQUIRED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 class WorkflowArtifactType(str, Enum):
-    SOURCE_DISCOVERY="SOURCE_DISCOVERY"; TARGET_DISCOVERY="TARGET_DISCOVERY"; MAPPING_PLAN="MAPPING_PLAN"; APPROVED_MAPPING_PLAN="APPROVED_MAPPING_PLAN"
-    TRANSFORMATION_PREVIEW="TRANSFORMATION_PREVIEW"; EXECUTION_EVIDENCE="EXECUTION_EVIDENCE"; VALIDATION_PREVIEW="VALIDATION_PREVIEW"; VALIDATION_EXECUTION_REPORT="VALIDATION_EXECUTION_REPORT"
+    """Identify each immutable evidence payload stored by a workflow."""
+
+    SOURCE_DISCOVERY = "SOURCE_DISCOVERY"
+    TARGET_DISCOVERY = "TARGET_DISCOVERY"
+    MAPPING_PLAN = "MAPPING_PLAN"
+    APPROVED_MAPPING_PLAN = "APPROVED_MAPPING_PLAN"
+    TRANSFORMATION_PREVIEW = "TRANSFORMATION_PREVIEW"
+    EXECUTION_EVIDENCE = "EXECUTION_EVIDENCE"
+    VALIDATION_PREVIEW = "VALIDATION_PREVIEW"
+    VALIDATION_EXECUTION_REPORT = "VALIDATION_EXECUTION_REPORT"
 
 class MigrationAuditEventType(str, Enum):
-    WORKFLOW_CREATED="WORKFLOW_CREATED"; STATUS_CHANGED="STATUS_CHANGED"; ARTIFACT_APPENDED="ARTIFACT_APPENDED"; WORKFLOW_FAILED="WORKFLOW_FAILED"; WORKFLOW_CANCELLED="WORKFLOW_CANCELLED"
+    """Describe append-only changes visible in workflow history."""
 
-class AuditActorType(str, Enum): SYSTEM="SYSTEM"; USER="USER"; SERVICE="SERVICE"
+    WORKFLOW_CREATED = "WORKFLOW_CREATED"
+    STATUS_CHANGED = "STATUS_CHANGED"
+    ARTIFACT_APPENDED = "ARTIFACT_APPENDED"
+    WORKFLOW_FAILED = "WORKFLOW_FAILED"
+    WORKFLOW_CANCELLED = "WORKFLOW_CANCELLED"
+
+class AuditActorType(str, Enum):
+    """Classify the source of a durable command without sensitive values."""
+
+    SYSTEM = "SYSTEM"
+    USER = "USER"
+    SERVICE = "SERVICE"
 
 _CODE=re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 def _text(value: str, name: str, limit: int=512) -> None:
@@ -38,6 +76,8 @@ def _codes(values: tuple[str,...]) -> None:
 
 @dataclass(frozen=True,slots=True,kw_only=True)
 class WorkflowRelation:
+    """Identify one source or target relation and its database system."""
+
     catalog_name: str|None; schema_name: str; object_name: str; system: str
     def __post_init__(self):
         if self.catalog_name is not None: _text(self.catalog_name,"catalog_name")
@@ -45,6 +85,8 @@ class WorkflowRelation:
 
 @dataclass(frozen=True,slots=True,kw_only=True,repr=False)
 class MigrationWorkflow:
+    """Hold the current optimistic, versioned view of a migration workflow."""
+
     workflow_id: UUID; display_name: str; source_profile_id: str; target_profile_id: str
     source_relation: WorkflowRelation; target_relation: WorkflowRelation; status: MigrationWorkflowStatus
     version: int; created_at: datetime; updated_at: datetime; latest_artifact_version: int=0
@@ -63,6 +105,8 @@ class MigrationWorkflow:
 
 @dataclass(frozen=True,slots=True,kw_only=True,repr=False)
 class WorkflowArtifact:
+    """Store one canonical, hashed, immutable workflow evidence payload."""
+
     artifact_id: UUID; workflow_id: UUID; artifact_type: WorkflowArtifactType; artifact_version: int; schema_version: int
     payload: bytes=field(repr=False); payload_sha256: str; created_at: datetime
     def __post_init__(self):
@@ -79,12 +123,16 @@ class WorkflowArtifact:
 
 @dataclass(frozen=True,slots=True,kw_only=True)
 class AuditMetadata:
+    """Carry a bounded reason code safe for durable audit storage."""
+
     reason_code: str|None=None
     def __post_init__(self):
         if self.reason_code is not None and not _CODE.fullmatch(self.reason_code): raise ValueError("reason_code is invalid.")
 
 @dataclass(frozen=True,slots=True,kw_only=True,repr=False)
 class MigrationAuditEvent:
+    """Describe one ordered, append-only workflow change and its actor context."""
+
     sequence_number: int; event_id: UUID; workflow_id: UUID; event_type: MigrationAuditEventType
     previous_status: MigrationWorkflowStatus|None; new_status: MigrationWorkflowStatus|None; workflow_version: int
     artifact_id: UUID|None; artifact_type: WorkflowArtifactType|None; actor_type: AuditActorType
@@ -115,6 +163,8 @@ class MigrationAuditEvent:
         if not valid or (self.artifact_id is None)!=(self.artifact_type is None): raise ValueError("event fields are inconsistent.")
     def __repr__(self): return f"MigrationAuditEvent(sequence_number={self.sequence_number}, event_type={self.event_type.value!r}, workflow_version={self.workflow_version})"
 
+# Transition policy is explicit data so persistence services can validate a
+# command before opening a transaction and tests can cover the complete graph.
 ALLOWED_TRANSITIONS={
     MigrationWorkflowStatus.DRAFT:frozenset({MigrationWorkflowStatus.DISCOVERED,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
     MigrationWorkflowStatus.DISCOVERED:frozenset({MigrationWorkflowStatus.MAPPING_PROPOSED,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),

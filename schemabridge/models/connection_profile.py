@@ -1,4 +1,10 @@
-"""Immutable database connection profile values."""
+"""Validate and hold one immutable database connection profile.
+
+Profiles separate operator-controlled credentials, limits, and write permission
+from client workflow commands.  Nested connector options are deeply frozen,
+reserved fields cannot bypass top-level policy, and representations hide secret
+values by default.
+"""
 
 from __future__ import annotations
 
@@ -130,7 +136,7 @@ def _snowflake_account_format_valid(value: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class ConnectionProfile:
-    """A deeply immutable, vendor-neutral set of connection parameters."""
+    """A deeply immutable, vendor-neutral set of limits and connection values."""
 
     profile_id: str
     db_type: str
@@ -180,6 +186,9 @@ class ConnectionProfile:
         if max_rows > 10_000:
             raise ConnectionProfileError("max_rows must not exceed 10000.")
 
+        # Drivers often accept duplicate host, credential, timeout, or database
+        # settings through option dictionaries.  Rejecting those aliases keeps
+        # the validated top-level profile authoritative.
         reserved = sorted(
             key for key in frozen_options if _normalized_option_key(key) in _RESERVED_CONNECTION_OPTION_KEYS
         )
@@ -224,6 +233,8 @@ class ConnectionProfile:
     def to_safe_dict(self) -> dict[str, object]:
         """Return profile metadata suitable for responses and logs."""
 
+        # Presence flags are enough for configuration diagnostics without
+        # revealing endpoints, identities, option values, or passwords.
         return {
             "name": self.profile_id,
             "db_type": self.db_type,

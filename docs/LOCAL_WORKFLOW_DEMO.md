@@ -58,6 +58,8 @@ This calls `discover-source`, `discover-target`, and `mapping-proposals`, then s
 
 Continue in Swagger so every version and artifact reference comes from the preceding persisted response:
 
+Before compiling or executing, provision the named staging relation in Snowflake by an external process. SchemaBridge uses it as the `INSERT ... SELECT` source and does not extract PostgreSQL rows or load Snowflake staging.
+
 | Step | Endpoint | Required references |
 |---|---|---|
 | Approve mapping | `POST /api/v1/migrations/workflows/{id}/mapping-approvals` | current version, mapping artifact version, per-column review decisions |
