@@ -28,7 +28,7 @@ class SQLServerConnector(DatabaseConnector):
     def _driver(self):
         """Load pyodbc only when the SQL Server backend is selected."""
         # Lazy loading prevents an absent ODBC installation from breaking other
-        # connectors during MCP server startup.
+        # connectors during application startup.
         try:
             import pyodbc  # type: ignore
         except ImportError as exc:

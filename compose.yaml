@@ -38,8 +38,7 @@ services:
       SCHEMABRIDGE_CONTROL_PLANE_DSN: postgresql://${SCHEMABRIDGE_CONTROL_PLANE_USER:-schemabridge}:${SCHEMABRIDGE_CONTROL_PLANE_PASSWORD:-local_only_change_me}@control-plane:5432/${SCHEMABRIDGE_CONTROL_PLANE_DB:-schemabridge}
       DB_TYPE: demo
       DB_HOST: demo-local
-      DB_DATABASE: qa_demo
-      DB_ACTIVE_PROFILE: ${DB_ACTIVE_PROFILE:-demo-local}
+      DB_DATABASE: schemabridge_demo
       DB_PROFILES_JSON: '${DB_PROFILES_JSON:-}'
       DB_TIMEOUT_SECONDS: ${DB_TIMEOUT_SECONDS:-30}
       DB_MAX_ROWS: ${DB_MAX_ROWS:-500}

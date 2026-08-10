@@ -1,7 +1,7 @@
-"""Structured logging for the MCP execution framework.
+"""Structured logging for SchemaBridge database operations.
 
 This module owns request-scoped log context, JSON formatting, and handler
-registration. It should not know anything about SQL semantics or MCP tools.
+registration. It should not know anything about SQL or workflow semantics.
 """
 
 from __future__ import annotations
@@ -72,11 +72,10 @@ logger.propagate = False
 
 if not logger.handlers:
     # Handler registration is idempotent because modules can be imported more
-    # than once by test runners and MCP client startup discovery.
+    # than once by test runners and application startup discovery.
     formatter = _JsonFormatter()
 
-    # MCP uses stderr for technical diagnostics so protocol output on stdout
-    # remains clean for the MCP client.
+    # Keep technical diagnostics on stderr so command output remains clean.
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     console_handler.addFilter(_RequestContextFilter())

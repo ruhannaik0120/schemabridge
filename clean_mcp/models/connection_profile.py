@@ -204,7 +204,7 @@ class ConnectionProfile:
         if db_type == "sqlserver" and bool(username) != bool(self.password):
             raise ConnectionProfileError("username and password must either both be set or both be empty.")
         if db_type == "demo" and not database:
-            database = "qa_demo"
+            database = "schemabridge_demo"
 
         object.__setattr__(self, "profile_id", profile_id)
         object.__setattr__(self, "db_type", db_type)

@@ -1,4 +1,4 @@
-"""Offline demo connector for MCP execution framework demonstrations.
+"""Offline demo connector for SchemaBridge workflow demonstrations.
 
 This connector does not connect to an external database. It returns deterministic
 sample metadata and query results so demos remain reliable when credentials or
@@ -17,12 +17,12 @@ if TYPE_CHECKING:
     from models.connection_profile import ConnectionProfile
 
 _DEMO_DATABASES = [
-    {"name": "qa_demo"},
+    {"name": "schemabridge_demo"},
     {"name": "sales"},
 ]
 
 _DEMO_TABLES = {
-    "qa_demo": [
+    "schemabridge_demo": [
         {"TABLE_SCHEMA": "public", "TABLE_NAME": "demo_items", "TABLE_TYPE": "BASE TABLE"},
         {"TABLE_SCHEMA": "public", "TABLE_NAME": "validation_results", "TABLE_TYPE": "BASE TABLE"},
     ],
@@ -32,12 +32,12 @@ _DEMO_TABLES = {
 }
 
 _DEMO_COLUMNS = {
-    ("qa_demo", "demo_items"): [
+    ("schemabridge_demo", "demo_items"): [
         {"COLUMN_NAME": "item_id", "DATA_TYPE": "integer", "IS_NULLABLE": "NO"},
         {"COLUMN_NAME": "item_name", "DATA_TYPE": "varchar", "IS_NULLABLE": "NO"},
         {"COLUMN_NAME": "status", "DATA_TYPE": "varchar", "IS_NULLABLE": "YES"},
     ],
-    ("qa_demo", "validation_results"): [
+    ("schemabridge_demo", "validation_results"): [
         {"COLUMN_NAME": "run_id", "DATA_TYPE": "varchar", "IS_NULLABLE": "NO"},
         {"COLUMN_NAME": "passed", "DATA_TYPE": "boolean", "IS_NULLABLE": "NO"},
     ],
@@ -74,7 +74,7 @@ class DemoConnector(DatabaseConnector):
     def _target_database(self, database: str | None) -> str:
         """Resolve a requested demo database to a deterministic fallback."""
         profile = self._profile()
-        return (database or profile.database or "qa_demo").strip() or "qa_demo"
+        return (database or profile.database or "schemabridge_demo").strip() or "schemabridge_demo"
 
     def connect(self, database: str | None = None, timeout_seconds: int | None = None) -> dict[str, Any]:
         """Return simulated connection context without opening a network socket."""

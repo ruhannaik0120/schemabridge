@@ -1,6 +1,6 @@
 # Adding A Connector
 
-A new backend implements `DatabaseConnector`, exports `Connector`, and receives one factory registration. MCP tools and services remain unchanged.
+A new backend implements `DatabaseConnector`, exports `Connector`, and receives one factory registration. Workflow orchestration remains unchanged.
 
 ## Contract
 
@@ -28,7 +28,7 @@ Register the module path in `SUPPORTED_CONNECTORS` inside `connectors/factory.py
 4. Parameterize metadata filters such as schema and table names.
 5. Apply timeouts and returned-row limits with native driver features where possible.
 6. Commit successful data-changing statements for transactional drivers.
-7. Return stable dictionaries expected by `QueryService`.
+7. Return stable dictionaries expected by `DatabaseService`.
 8. Close cursors and connections in `finally` blocks or context managers.
-9. Never import vendor drivers from `server.py`, `tools/`, or `services/`.
+9. Never import vendor drivers outside `connectors/` or the control-plane persistence boundary.
 10. Add fake-driver unit tests and perform opt-in live verification separately.

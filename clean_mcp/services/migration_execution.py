@@ -41,8 +41,8 @@ class TargetExecutionResult:
 class ProfileBoundMigrationExecutionService:
     """Resolve a write-enabled target profile and discard unsafe driver output."""
 
-    def __init__(self, query_service_factory: Callable[[str], object]) -> None:
-        self.query_service_factory = query_service_factory
+    def __init__(self, database_service_factory: Callable[[str], object]) -> None:
+        self.database_service_factory = database_service_factory
 
     def prepare(
         self,
@@ -53,7 +53,7 @@ class ProfileBoundMigrationExecutionService:
         timeout_seconds: int | None,
     ) -> PreparedMigrationTarget:
         try:
-            service = self.query_service_factory(profile_id)
+            service = self.database_service_factory(profile_id)
             context = service.migration_execution_context(timeout_seconds)
         except Exception:
             raise WorkflowTargetProfileUnavailableError() from None
@@ -113,27 +113,18 @@ class ProfileBoundMigrationExecutionService:
         if preview.target_relation[0] != target.database:
             raise WorkflowUnsafeGeneratedStatementError()
         try:
-            response = target.service.execute_query(
+            response = target.service.execute_migration_statement(
                 sql=preview.sql,
                 parameters=preview.parameters,
                 database=target.database,
-                schema=preview.target_relation[1],
                 timeout_seconds=target.timeout_seconds,
-                max_rows=1,
-                _tool_name="execute_migration_transformation",
             )
         except Exception:
             return TargetExecutionResult(
                 TargetExecutionDisposition.OUTCOME_UNCERTAIN,
                 failure_category="TARGET_EXECUTION_INTERRUPTED",
             )
-        if getattr(response, "success", False) is not True:
-            return TargetExecutionResult(
-                TargetExecutionDisposition.OUTCOME_UNCERTAIN,
-                failure_category="TARGET_EXECUTION_UNCONFIRMED",
-            )
-        data = getattr(response, "data", {})
-        rows = data.get("rows_affected") if isinstance(data, dict) else None
+        rows = getattr(response, "rows_affected", None)
         affected_rows = (
             rows
             if isinstance(rows, int) and not isinstance(rows, bool) and rows >= 0

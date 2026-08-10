@@ -25,16 +25,16 @@ def get_profile_resolver() -> Callable:
 
 
 def get_schema_discovery_service() -> Callable:
-    """Return a lazy resolver backed by the existing profile-bound service cache."""
+    """Return a lazy resolver backed by profile-bound database services."""
 
-    return _resolve_profile_discovery_connector
+    return _resolve_profile_database_service
 
 
-def _resolve_profile_discovery_connector(profile_id: str):
+def _resolve_profile_database_service(profile_id: str):
     _prepare_project_imports()
-    from services.query_service import get_query_service
+    from services.database_service import get_database_service
 
-    return get_query_service(profile_id).connector
+    return get_database_service(profile_id)
 
 
 def get_schema_mapping_service():
@@ -78,20 +78,20 @@ def get_validation_compiler() -> Callable:
     return compile_validation_sql
 
 
-def get_query_service_factory():
+def get_database_service_factory():
     _prepare_project_imports()
-    from services.query_service import get_query_service
+    from services.database_service import get_database_service
 
-    return get_query_service
+    return get_database_service
 
 
 def get_migration_execution_service(
-    query_service_factory=Depends(get_query_service_factory),
+    database_service_factory=Depends(get_database_service_factory),
 ):
     _prepare_project_imports()
     from services.migration_execution import ProfileBoundMigrationExecutionService
 
-    return ProfileBoundMigrationExecutionService(query_service_factory)
+    return ProfileBoundMigrationExecutionService(database_service_factory)
 
 
 def build_workflow_repository(config):
@@ -181,7 +181,7 @@ REQUIRED_DEPENDENCY_HOOKS = (
     get_validation_compiler,
     get_validation_execution_service,
     get_validation_execution_service_factory,
-    get_query_service_factory,
+    get_database_service_factory,
     get_migration_execution_service,
     build_workflow_repository,
     get_workflow_repository,

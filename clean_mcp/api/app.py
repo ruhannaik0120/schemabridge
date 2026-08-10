@@ -21,12 +21,12 @@ from .schemas.common import ErrorResponse
 
 
 def _cleanup_services() -> None:
-    """Close an existing query-service cache without importing it to do so."""
+    """Close an existing database-service cache without importing it to do so."""
 
     seen: set[int] = set()
-    for module_name in ("services.query_service", "clean_mcp.services.query_service"):
+    for module_name in ("services.database_service", "clean_mcp.services.database_service"):
         module = sys.modules.get(module_name)
-        reset = getattr(module, "reset_profile_query_services", None)
+        reset = getattr(module, "reset_database_services", None)
         if callable(reset) and id(reset) not in seen:
             seen.add(id(reset))
             try:

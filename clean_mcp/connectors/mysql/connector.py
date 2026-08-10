@@ -21,7 +21,7 @@ class MySQLConnector(DatabaseConnector):
     def _driver(self):
         """Load the optional MySQL driver only when this backend is selected."""
         # Import on first use so installations that do not need MySQL can still
-        # start the shared MCP framework.
+        # start SchemaBridge's shared connector layer.
         try:
             import mysql.connector  # type: ignore
         except ImportError as exc:

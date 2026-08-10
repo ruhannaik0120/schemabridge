@@ -42,7 +42,7 @@ def test_environment_examples_separate_control_source_target_and_have_no_demo_pa
         "SCHEMABRIDGE_RUN_CONTROL_PLANE_INTEGRATION",
     ):
         assert name in combined
-    assert "qa_password" not in combined
+    assert "demo_password" not in combined
     assert "<SNOWFLAKE_PASSWORD>" in combined and "<POSTGRES_PASSWORD>" in combined
 
 

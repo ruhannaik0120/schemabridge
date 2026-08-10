@@ -32,9 +32,9 @@ flowchart TB
     ORCH --> DOMAIN["Canonical discovery, mapping, SQL, validation, reconciliation"]
     ORCH --> REPO["Transactional workflow repository"]
     REPO --> CP[("Control-plane PostgreSQL")]
-    ORCH --> QS["Profile-bound query services"]
-    QS --> PG[("Source PostgreSQL")]
-    QS --> SF[("Target Snowflake")]
+    ORCH --> DB["Profile-bound database services"]
+    DB --> PG[("Source PostgreSQL")]
+    DB --> SF[("Target Snowflake")]
 ```
 
 The control plane stores workflow state, immutable artifacts, idempotency records, execution attempts, validation runs, and append-only audit events. Source and target credentials stay in named runtime profiles and are never persisted in workflow artifacts.
@@ -47,7 +47,7 @@ The control plane stores workflow state, immutable artifacts, idempotency record
 - Profile-bound, write-authorized Snowflake migration execution.
 - Paired PostgreSQL/Snowflake aggregate validation and reconciliation.
 - Durable FastAPI workflows, artifacts, audit history, retries, and recovery quarantine.
-- Legacy MCP database tools and connector extension points remain under `clean_mcp/`.
+- Profile-bound database access and reusable connector extension points live under `clean_mcp/`.
 
 Workflow execution is currently PostgreSQL source to Snowflake target. MySQL and SQL Server exist in the older generic connector layer; they are not production migration-execution targets for the durable workflow.
 
@@ -124,7 +124,7 @@ The root `.env.example` documents every local setting used by this workflow:
 
 - Compose: `SCHEMABRIDGE_API_PORT`, `SCHEMABRIDGE_CONTROL_PLANE_PORT`, `SCHEMABRIDGE_CONTROL_PLANE_DB`, `SCHEMABRIDGE_CONTROL_PLANE_USER`, and `SCHEMABRIDGE_CONTROL_PLANE_PASSWORD`.
 - Control plane: `SCHEMABRIDGE_CONTROL_PLANE_DSN`.
-- Named profiles: `DB_PROFILES_JSON` and `DB_ACTIVE_PROFILE`.
+- Named profiles: `DB_PROFILES_JSON`.
 - Connector defaults and limits: `DB_TYPE`, `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `DB_CONNECTION_OPTIONS`, `DB_TIMEOUT_SECONDS`, `DB_MAX_ROWS`, and `LOG_LEVEL`.
 - Optional tests: `SCHEMABRIDGE_RUN_CONTROL_PLANE_INTEGRATION`, `SCHEMABRIDGE_CONTROL_PLANE_TEST_DSN`, `SCHEMABRIDGE_POSTGRES_INTEGRATION`, `SCHEMABRIDGE_POSTGRES_HOST`, `SCHEMABRIDGE_POSTGRES_PORT`, `SCHEMABRIDGE_POSTGRES_DATABASE`, `SCHEMABRIDGE_POSTGRES_USERNAME`, `SCHEMABRIDGE_POSTGRES_PASSWORD`, and `DB_SMOKE_TEST_CONNECT`.
 

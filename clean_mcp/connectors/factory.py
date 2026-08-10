@@ -49,7 +49,7 @@ class ConnectorFactory:
         # require importing Snowflake or SQL Server dependencies at startup.
         module = import_module(module_path)
         # Every connector exports the same alias, so adding a backend requires
-        # one registry entry and no changes to the service or MCP tool layers.
+        # one registry entry and no changes to workflow orchestration.
         connector_class = getattr(module, "Connector", None)
         if connector_class is None:
             raise ValueError(

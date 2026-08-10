@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from types import SimpleNamespace
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,6 +14,7 @@ from api.dependencies import (
     get_schema_mapping_service,
     get_validation_execution_service_factory,
 )
+from services.database_service import DatabaseExecutionResult
 from models.discovery import (
     CheckConstraintMetadata,
     ConstraintType,
@@ -182,6 +181,26 @@ def test_discovery_errors_are_fixed_and_redacted(profile, status, code) -> None:
     assert response.status_code == status
     assert response.json()["error"]["code"] == code
     assert all(text not in response.text.casefold() for text in ("select", "driver", profile.casefold()))
+
+
+def test_database_service_discovery_error_uses_existing_safe_502_contract() -> None:
+    class DatabaseAccessError(RuntimeError):
+        pass
+
+    def resolver(_profile_id):
+        raise DatabaseAccessError("private host and credential detail")
+
+    app = create_app()
+    app.dependency_overrides[get_schema_discovery_service] = lambda: resolver
+    with TestClient(app) as client:
+        response = client.post(
+            f"{BASE}/discover",
+            json={"profile_id": "pg", "schema_name": "public", "table_name": "orders"},
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "DISCOVERY_FAILED"
+    assert "private host" not in response.text
 
 
 @pytest.mark.parametrize("field", ["password", "secret", "credentials", "connection_string", "connector_options", "raw_sql", "query_text"])
@@ -370,16 +389,16 @@ def test_complete_http_workflow_executes_ordered_profile_bound_validation(monkey
         "m001_null_count": 0, "m001_distinct_count": 2,
     }
 
-    class QueryService:
+    class DatabaseService:
         def __init__(self, profile):
             self.profile = profile
 
-        def execute_query(self, **kwargs):
+        def execute_validation_query(self, **kwargs):
             calls.append((self.profile, deepcopy(kwargs)))
-            return SimpleNamespace(success=True, data={"columns": list(results), "rows": [tuple(results.values())]})
+            return DatabaseExecutionResult(tuple(results), (tuple(results.values()),), None)
 
     import services.validation_execution as execution_module
-    monkeypatch.setattr(execution_module, "get_query_service", lambda profile: QueryService(profile))
+    monkeypatch.setattr(execution_module, "get_database_service", lambda profile: DatabaseService(profile))
     app = _discover_app({"pg-source": source, "sf-target": target}, [])
     with TestClient(app) as client:
         discovered_source = client.post(f"{BASE}/discover", json={"profile_id": "pg-source", "schema_name": source.schema_name, "table_name": source.object_name}).json()
@@ -424,15 +443,15 @@ def test_execution_returns_validation_outcomes_as_success(monkeypatch, target_ch
             else:
                 target_metrics[key] = value
 
-    class QueryService:
+    class DatabaseService:
         def __init__(self, metrics):
             self.metrics = metrics
 
-        def execute_query(self, **_kwargs):
-            return SimpleNamespace(success=True, data={"columns": list(self.metrics), "rows": [tuple(self.metrics.values())]})
+        def execute_validation_query(self, **_kwargs):
+            return DatabaseExecutionResult(tuple(self.metrics), (tuple(self.metrics.values()),), None)
 
     import services.validation_execution as execution_module
-    monkeypatch.setattr(execution_module, "get_query_service", lambda profile: QueryService(source_metrics if profile == "pg" else target_metrics))
+    monkeypatch.setattr(execution_module, "get_database_service", lambda profile: DatabaseService(source_metrics if profile == "pg" else target_metrics))
     with TestClient(create_app()) as client:
         approved, _ = _get_approved(client, source, target)
         response = client.post(f"{BASE}/validations/execute", json={
@@ -447,12 +466,12 @@ def test_execution_returns_validation_outcomes_as_success(monkeypatch, target_ch
 def test_malformed_execution_result_is_redacted_502(monkeypatch) -> None:
     source, target = _workflow_tables()
 
-    class QueryService:
-        def execute_query(self, **_kwargs):
-            return SimpleNamespace(success=True, data={"columns": ["row_count"], "rows": [(1,), (2,)]})
+    class DatabaseService:
+        def execute_validation_query(self, **_kwargs):
+            return DatabaseExecutionResult(("row_count",), ((1,), (2,)), None)
 
     import services.validation_execution as execution_module
-    monkeypatch.setattr(execution_module, "get_query_service", lambda _profile: QueryService())
+    monkeypatch.setattr(execution_module, "get_database_service", lambda _profile: DatabaseService())
     with TestClient(create_app()) as client:
         approved, _ = _get_approved(client, source, target)
         response = client.post(f"{BASE}/validations/execute", json={

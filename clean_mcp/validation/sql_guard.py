@@ -1,4 +1,4 @@
-"""SQL validation guardrails for the MCP execution framework.
+"""SQL validation guardrails for controlled SchemaBridge database operations.
 
 This module keeps the validation lightweight and readable. It should not parse
 SQL fully or take on connector responsibilities.

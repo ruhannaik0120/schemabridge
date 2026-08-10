@@ -1,4 +1,4 @@
-"""Generic runtime configuration for the MCP execution framework."""
+"""Validated database configuration shared by SchemaBridge connectors."""
 
 from __future__ import annotations
 
@@ -27,7 +27,6 @@ CONFIG_ENV_KEYS = frozenset(
         "DB_CONNECTION_OPTIONS",
         "DB_TIMEOUT_SECONDS",
         "DB_MAX_ROWS",
-        "DB_ACTIVE_PROFILE",
         "DB_PROFILES_JSON",
         "LOG_LEVEL",
     }
@@ -216,7 +215,7 @@ class ConnectionConfig:
 
 
 class Config:
-    """Central configuration surface for the MCP server."""
+    """Central configuration surface for database connectors and local tooling."""
 
     DB_TYPE: ClassVar[str] = ""
     HOST: ClassVar[str] = ""
@@ -343,7 +342,7 @@ class Config:
                 "DB_HOST for Snowflake must be an account identifier without a URL or snowflakecomputing.com suffix."
             )
         if cls.DB_TYPE == "demo" and not cls.DATABASE:
-            cls.DATABASE = "qa_demo"
+            cls.DATABASE = "schemabridge_demo"
         return errors
 
     @classmethod

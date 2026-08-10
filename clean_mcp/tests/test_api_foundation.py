@@ -90,7 +90,7 @@ def test_exact_asgi_factory_target_imports() -> None:
                 "factory=import_from_string('clean_mcp.api.app:create_app'); "
                 "assert factory().title == 'SchemaBridge API'; "
                 "assert 'config' not in __import__('sys').modules; "
-                "assert 'services.query_service' not in __import__('sys').modules; "
+                "assert 'services.database_service' not in __import__('sys').modules; "
                 "dependency=__import__('clean_mcp.api.dependencies', fromlist=['get_schema_mapping_service']); "
                 "assert type(dependency.get_schema_mapping_service()).__name__ == 'SchemaMappingService'"
             ),
@@ -110,7 +110,7 @@ def test_import_and_openapi_do_not_load_database_runtime() -> None:
     newly_loaded = set(sys.modules) - before
     forbidden = {
         "config",
-        "services.query_service",
+        "services.database_service",
         "connectors.postgresql.connector",
         "connectors.snowflake.connector",
     }
@@ -165,9 +165,9 @@ def test_partial_startup_leaves_application_not_ready(monkeypatch) -> None:
 
 def test_shutdown_closes_only_an_already_loaded_supported_cache(monkeypatch) -> None:
     calls: list[str] = []
-    fake = ModuleType("services.query_service")
-    fake.reset_profile_query_services = lambda: calls.append("reset")  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "services.query_service", fake)
+    fake = ModuleType("services.database_service")
+    fake.reset_database_services = lambda: calls.append("reset")  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "services.database_service", fake)
 
     with TestClient(create_app()):
         pass

@@ -22,8 +22,8 @@ def _profile(db_type: str, **overrides) -> ConnectionProfile:
         "profile_id": f"{db_type}-profile",
         "db_type": db_type,
         "host": "db.example.test" if db_type != "demo" else "",
-        "database": "qa_demo",
-        "username": "qa_user" if db_type == "snowflake" else "",
+        "database": "schemabridge_demo",
+        "username": "demo_user" if db_type == "snowflake" else "",
         "password": "profile-secret" if db_type == "snowflake" else "",
         "timeout_seconds": 17,
         "max_rows": 123,
@@ -168,7 +168,7 @@ def test_profile_bound_metadata_does_not_serialize_credentials():
     )
     connector = ConnectorFactory.create_for_profile(profile)
 
-    # logged_in_user remains server-reported operational metadata. QueryService
+    # logged_in_user remains server-reported operational metadata. DatabaseService
     # will decide later whether SchemaBridge displays it; profile secrets and
     # secret connection options must never be serialized here.
     rendered = json.dumps(connector.test_connection())

@@ -112,23 +112,23 @@ def test_test_connection_returns_server_snapshot(monkeypatch):
 
 def test_odbc_values_escape_connection_string_delimiters(monkeypatch):
     _configure_generic_settings(monkeypatch)
-    monkeypatch.setenv("DB_USERNAME", "qa-user")
+    monkeypatch.setenv("DB_USERNAME", "demo-user")
     monkeypatch.setenv("DB_PASSWORD", "p}ass;word")
     Config.load()
     connector = SQLServerConnector()
 
     connection_string = connector._build_connection_string(
         Config.connection_config(),
-        "qa};SERVER=shadow",
+        "demo};SERVER=shadow",
     )
 
     assert "PWD={p}}ass;word}" in connection_string
-    assert connection_string.endswith("DATABASE={qa}};SERVER=shadow};")
+    assert connection_string.endswith("DATABASE={demo}};SERVER=shadow};")
 
 
 def test_sqlserver_rejects_partial_explicit_credentials(monkeypatch):
     _configure_generic_settings(monkeypatch)
-    monkeypatch.setenv("DB_USERNAME", "qa-user")
+    monkeypatch.setenv("DB_USERNAME", "demo-user")
     monkeypatch.setenv("DB_PASSWORD", "")
     Config.load()
 

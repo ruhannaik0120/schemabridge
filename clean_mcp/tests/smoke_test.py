@@ -1,9 +1,8 @@
-"""Minimal smoke test for MCP startup validation.
+"""Minimal smoke test for database configuration and connector validation.
 
 This script exercises configuration loading, startup validation, connector
 creation, and an optional lightweight connectivity check.
-It is intended to catch environment and startup issues before starting the
-MCP server.
+It is intended to catch environment and startup issues before starting the API.
 """
 
 import sys

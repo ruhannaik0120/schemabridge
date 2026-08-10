@@ -1,7 +1,7 @@
-"""Verify that MCP execution does not create persistent result artifacts."""
+"""Verify that controlled database execution creates no result artifacts."""
 
-from config import Config
-from services.query_service import QueryService
+from models.connection_profile import ConnectionProfile
+from services.database_service import DatabaseService
 
 
 class _Connector:
@@ -13,11 +13,15 @@ class _Connector:
 
 def test_execution_does_not_write_result_artifacts(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DB_TYPE", "demo")
-    monkeypatch.setenv("DB_DATABASE", "qa_demo")
-    Config.load()
+    profile = ConnectionProfile(
+        profile_id="demo-local",
+        db_type="demo",
+        database="schemabridge_demo",
+    )
 
-    response = QueryService(_Connector()).execute_query(sql="SELECT 1").to_dict()
+    result = DatabaseService(profile, _Connector()).execute_validation_query(
+        sql="SELECT 1"
+    )
 
-    assert response["success"] is True
+    assert result.rows == ({"value": 1},)
     assert list(tmp_path.rglob("*.json")) == []

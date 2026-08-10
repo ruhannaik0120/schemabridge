@@ -8,7 +8,7 @@ def test_demo_connector_lists_sample_databases():
     payload = connector.list_databases()
 
     assert payload["count"] >= 1
-    assert payload["databases"][0]["name"] == "qa_demo"
+    assert payload["databases"][0]["name"] == "schemabridge_demo"
 
 
 def test_demo_connector_executes_health_check_query():
@@ -21,7 +21,7 @@ def test_demo_connector_executes_health_check_query():
 
 def test_demo_connector_describes_sample_table():
     connector = DemoConnector()
-    payload = connector.describe_table(database="qa_demo", table="demo_items")
+    payload = connector.describe_table(database="schemabridge_demo", table="demo_items")
 
     assert payload["column_count"] == 3
     assert payload["columns"][0]["COLUMN_NAME"] == "item_id"

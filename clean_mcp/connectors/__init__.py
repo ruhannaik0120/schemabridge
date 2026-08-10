@@ -1,1 +1,1 @@
-"""Connector implementations for the MCP runtime."""
+"""Connector implementations for SchemaBridge database access."""

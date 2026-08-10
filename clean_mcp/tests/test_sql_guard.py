@@ -1,4 +1,4 @@
-"""SQL validation tests for the MCP execution framework."""
+"""SQL validation tests for controlled database operations."""
 
 from validation.sql_guard import validate_query
 

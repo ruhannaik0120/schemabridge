@@ -1,4 +1,4 @@
-"""Database connector abstraction used by the MCP runtime."""
+"""Database connector abstraction used by SchemaBridge services."""
 
 from __future__ import annotations
 
@@ -29,10 +29,9 @@ def unique_column_names(columns: list[object]) -> list[str]:
 class DatabaseConnector(ABC):
     """Stable contract implemented by every database backend.
 
-    The MCP tools and service layer depend on this interface rather than a
-    vendor driver. Consequently, adding another backend normally means adding
-    one connector implementation and one factory registration while leaving
-    the shared execution, logging, response, and profile-switching code intact.
+    SchemaBridge services depend on this interface rather than a vendor driver.
+    Adding another backend normally means adding one connector implementation
+    and one factory registration while leaving workflow orchestration intact.
     """
 
     profile_db_type: ClassVar[str] = ""

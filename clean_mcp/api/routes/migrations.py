@@ -84,7 +84,7 @@ async def discover(
         class_names = {item.__name__ for item in type(error).__mro__}
         if "UnknownProfileError" in class_names:
             raise _error(404, "PROFILE_NOT_FOUND", "The requested connection profile is unavailable.") from None
-        if "SchemaDiscoveryError" in class_names:
+        if {"SchemaDiscoveryError", "DatabaseAccessError"} & class_names:
             raise _error(502, "DISCOVERY_FAILED", "Table discovery could not be completed.") from None
         raise
     if metadata is None:

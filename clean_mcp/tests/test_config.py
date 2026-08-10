@@ -1,4 +1,4 @@
-"""Configuration tests for the MCP server."""
+"""Configuration tests for SchemaBridge database connectors."""
 
 import os
 
@@ -73,7 +73,7 @@ def test_config_rejects_unsupported_db_type(monkeypatch):
 def test_config_allows_demo_without_host(monkeypatch):
     monkeypatch.setenv("DB_TYPE", "demo")
     monkeypatch.setenv("DB_HOST", "")
-    monkeypatch.setenv("DB_DATABASE", "qa_demo")
+    monkeypatch.setenv("DB_DATABASE", "schemabridge_demo")
 
     Config.load()
     Config.validate()
@@ -134,7 +134,7 @@ def test_config_accepts_snowflake_locator_with_region_segments(monkeypatch):
 
 def test_reload_dotenv_clears_removed_recognized_values(monkeypatch, tmp_path):
     dotenv_path = tmp_path / ".env"
-    dotenv_path.write_text("DB_TYPE=demo\nDB_DATABASE=qa_demo\n", encoding="utf-8")
+    dotenv_path.write_text("DB_TYPE=demo\nDB_DATABASE=schemabridge_demo\n", encoding="utf-8")
     monkeypatch.setattr(config_module, "_DOTENV_PATH", dotenv_path)
     monkeypatch.setenv("DB_USERNAME", "stale-user")
     monkeypatch.setenv("DB_PASSWORD", "stale-password")
@@ -206,7 +206,7 @@ def test_config_rejects_connection_options_that_override_profile_fields(monkeypa
 
 def test_error_redaction_handles_nested_secrets_and_bearer_tokens(monkeypatch):
     monkeypatch.setenv("DB_TYPE", "demo")
-    monkeypatch.setenv("DB_DATABASE", "qa_demo")
+    monkeypatch.setenv("DB_DATABASE", "schemabridge_demo")
     monkeypatch.setenv("DB_CONNECTION_OPTIONS", '{"auth":{"clientSecret":"nested-value"}}')
     Config.load()
 

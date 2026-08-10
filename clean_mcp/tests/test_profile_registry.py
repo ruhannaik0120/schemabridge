@@ -9,7 +9,6 @@ import pytest
 from config import Config
 from connectors.factory import ConnectorFactory
 from models.connection_profile import ConnectionProfile
-from services import profile_service
 from services.profile_registry import ProfileRegistry, ProfileRegistryError, UnknownProfileError
 
 
@@ -318,15 +317,12 @@ def test_repr_safe_serialization_and_listing_never_expose_secrets():
 
 
 def test_registry_creation_does_not_mutate_environment_or_config(monkeypatch):
-    monkeypatch.setenv("DB_ACTIVE_PROFILE", "legacy-active")
-    monkeypatch.setattr(profile_service, "_active_profile", "legacy-active")
     monkeypatch.setattr(
         ConnectorFactory,
         "create",
         lambda *args, **kwargs: pytest.fail("registry created a database connector"),
     )
     environment_before = dict(os.environ)
-    active_profile_before = profile_service._active_profile
     config_before = {
         "db_type": Config.DB_TYPE,
         "host": Config.HOST,
@@ -351,8 +347,6 @@ def test_registry_creation_does_not_mutate_environment_or_config(monkeypatch):
     assert Config.CONNECTION_OPTIONS == config_before["connection_options"]
     assert Config.GLOBAL_TIMEOUT_SECONDS == config_before["timeout"]
     assert Config.GLOBAL_MAX_ROWS == config_before["max_rows"]
-    assert os.environ["DB_ACTIVE_PROFILE"] == "legacy-active"
-    assert profile_service._active_profile == active_profile_before
 
 
 def test_postgresql_and_snowflake_profiles_coexist_in_one_registry():

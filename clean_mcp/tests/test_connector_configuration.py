@@ -14,9 +14,9 @@ from connectors.snowflake.connector import SnowflakeConnector
 def _configure(monkeypatch, db_type: str, options: str = "{}") -> None:
     monkeypatch.setenv("DB_TYPE", db_type)
     monkeypatch.setenv("DB_HOST", "db.example.test")
-    monkeypatch.setenv("DB_DATABASE", "qa_demo")
-    monkeypatch.setenv("DB_USERNAME", "qa_user")
-    monkeypatch.setenv("DB_PASSWORD", "qa_password")
+    monkeypatch.setenv("DB_DATABASE", "schemabridge_demo")
+    monkeypatch.setenv("DB_USERNAME", "demo_user")
+    monkeypatch.setenv("DB_PASSWORD", "demo_password")
     monkeypatch.setenv("DB_CONNECTION_OPTIONS", options)
     monkeypatch.setenv("DB_TIMEOUT_SECONDS", "12")
     monkeypatch.setenv("DB_MAX_ROWS", "100")
@@ -27,17 +27,17 @@ def _configure(monkeypatch, db_type: str, options: str = "{}") -> None:
 def test_mysql_connection_arguments(monkeypatch):
     _configure(monkeypatch, "mysql", '{"port":3307,"ssl_disabled":true}')
 
-    kwargs = MySQLConnector()._connection_kwargs(Config.connection_config(), "qa_demo")
+    kwargs = MySQLConnector()._connection_kwargs(Config.connection_config(), "schemabridge_demo")
 
     assert kwargs == {
         "host": "db.example.test",
         "port": 3307,
-        "user": "qa_user",
-        "password": "qa_password",
+        "user": "demo_user",
+        "password": "demo_password",
         "connection_timeout": 12,
         "read_timeout": 12,
         "write_timeout": 12,
-        "database": "qa_demo",
+        "database": "schemabridge_demo",
         "ssl_disabled": True,
     }
 
@@ -45,14 +45,14 @@ def test_mysql_connection_arguments(monkeypatch):
 def test_postgresql_connection_arguments(monkeypatch):
     _configure(monkeypatch, "postgresql", '{"port":5433,"sslmode":"require"}')
 
-    kwargs = PostgreSQLConnector()._connection_kwargs(Config.connection_config(), "qa_demo")
+    kwargs = PostgreSQLConnector()._connection_kwargs(Config.connection_config(), "schemabridge_demo")
 
     assert kwargs == {
         "host": "db.example.test",
         "port": 5433,
-        "dbname": "qa_demo",
-        "user": "qa_user",
-        "password": "qa_password",
+        "dbname": "schemabridge_demo",
+        "user": "demo_user",
+        "password": "demo_password",
         "connect_timeout": 12,
         "options": "-c statement_timeout=12000",
         "sslmode": "require",
@@ -63,20 +63,20 @@ def test_snowflake_connection_arguments(monkeypatch):
     _configure(
         monkeypatch,
         "snowflake",
-        '{"warehouse":"COMPUTE_WH","schema":"PUBLIC","role":"QA_ROLE"}',
+        '{"warehouse":"COMPUTE_WH","schema":"PUBLIC","role":"DEMO_ROLE"}',
     )
 
-    kwargs = SnowflakeConnector()._connection_kwargs(Config.connection_config(), "QA_DEMO")
+    kwargs = SnowflakeConnector()._connection_kwargs(Config.connection_config(), "SCHEMABRIDGE_DEMO")
 
     assert kwargs == {
         "account": "db.example.test",
-        "user": "qa_user",
-        "password": "qa_password",
+        "user": "demo_user",
+        "password": "demo_password",
         "login_timeout": 12,
-        "database": "QA_DEMO",
+        "database": "SCHEMABRIDGE_DEMO",
         "schema": "PUBLIC",
         "warehouse": "COMPUTE_WH",
-        "role": "QA_ROLE",
+        "role": "DEMO_ROLE",
     }
 
 

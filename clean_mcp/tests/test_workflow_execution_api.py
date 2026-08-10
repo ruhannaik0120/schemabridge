@@ -400,7 +400,7 @@ def test_confirmed_rollback_is_persisted_and_allows_an_explicit_retry() -> None:
 def test_uncertain_outcome_is_sanitized_persisted_and_never_retried() -> None:
     repository = InMemoryWorkflowRepository()
 
-    class UnsafeQueryService:
+    class UnsafeDatabaseService:
         def migration_execution_context(self, _timeout):
             return {
                 "profile_id": "sf-target",
@@ -411,10 +411,10 @@ def test_uncertain_outcome_is_sanitized_persisted_and_never_retried() -> None:
                 "connector_type": "snowflake",
             }
 
-        def execute_query(self, **_kwargs):
+        def execute_migration_statement(self, **_kwargs):
             raise RuntimeError("password=hunter2 host=private.example raw SQL failure")
 
-    executor = ProfileBoundMigrationExecutionService(lambda _profile: UnsafeQueryService())
+    executor = ProfileBoundMigrationExecutionService(lambda _profile: UnsafeDatabaseService())
     with TestClient(_app(repository, executor)) as client:
         created, approved, preview = _ready(client)
         workflow_id = created["workflow_id"]
@@ -437,7 +437,7 @@ def test_uncertain_outcome_is_sanitized_persisted_and_never_retried() -> None:
 def test_profile_write_opt_in_is_required_before_an_attempt_is_claimed() -> None:
     repository = InMemoryWorkflowRepository()
 
-    class ReadOnlyQueryService:
+    class ReadOnlyDatabaseService:
         def migration_execution_context(self, _timeout):
             return {
                 "profile_id": "sf-target",
@@ -448,7 +448,7 @@ def test_profile_write_opt_in_is_required_before_an_attempt_is_claimed() -> None
                 "connector_type": "snowflake",
             }
 
-    executor = ProfileBoundMigrationExecutionService(lambda _profile: ReadOnlyQueryService())
+    executor = ProfileBoundMigrationExecutionService(lambda _profile: ReadOnlyDatabaseService())
     with TestClient(_app(repository, executor)) as client:
         created, approved, preview = _ready(client)
         response = _mutate(

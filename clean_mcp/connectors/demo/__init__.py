@@ -1,1 +1,1 @@
-"""Demo connector package for offline MCP demonstrations."""
+"""Demo connector package for offline SchemaBridge demonstrations."""
