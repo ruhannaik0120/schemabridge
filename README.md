@@ -39,6 +39,15 @@ flowchart TB
 
 The control plane stores workflow state, immutable artifacts, idempotency records, execution attempts, validation runs, and append-only audit events. Source and target credentials stay in named runtime profiles and are never persisted in workflow artifacts.
 
+## Repository layout
+
+```text
+schemabridge/  Application and runtime code
+tests/         Automated tests and test fakes
+scripts/       Setup, verification, migration, and demo commands
+docs/          Connector and demonstration guides
+```
+
 ## Implemented scope
 
 - Canonical PostgreSQL and Snowflake schema discovery.
@@ -47,7 +56,7 @@ The control plane stores workflow state, immutable artifacts, idempotency record
 - Profile-bound, write-authorized Snowflake migration execution.
 - Paired PostgreSQL/Snowflake aggregate validation and reconciliation.
 - Durable FastAPI workflows, artifacts, audit history, retries, and recovery quarantine.
-- Profile-bound database access and reusable connector extension points live under `clean_mcp/`.
+- Profile-bound database access and reusable connector extension points live under `schemabridge/`.
 
 Workflow execution is currently PostgreSQL source to Snowflake target. MySQL and SQL Server exist in the older generic connector layer; they are not production migration-execution targets for the durable workflow.
 
@@ -88,11 +97,11 @@ Requirements: Git and Python 3.12 or later. Docker Desktop or Docker Engine with
 ```powershell
 git clone <repository-url>
 cd schemabridge
-PowerShell -ExecutionPolicy Bypass -File .\clean_mcp\scripts\setup.ps1
+PowerShell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 Copy-Item .\.env.example .\.env
 ```
 
-The setup script creates `.venv`, upgrades pip to the repository minimum, and installs `clean_mcp/requirements.txt`, including test dependencies.
+The setup script creates `.venv`, upgrades pip to the repository minimum, and installs `requirements-dev.txt`, which includes the runtime dependencies and current test tools.
 
 ### macOS, Linux, or another POSIX shell
 
@@ -102,11 +111,11 @@ cd schemabridge
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install "pip>=26.1.2"
-python -m pip install -r clean_mcp/requirements.txt
+python -m pip install -r requirements-dev.txt
 cp .env.example .env
 ```
 
-The checked-in example contains local demonstration defaults and placeholder integration values. Replace placeholders only in the ignored `.env`; never commit credentials. `clean_mcp/requirements-api.lock` is the pinned API-only dependency set used by the Docker image, while `clean_mcp/requirements.txt` includes the development and test tools.
+The checked-in example contains local demonstration defaults and placeholder integration values. Replace placeholders only in the ignored `.env`; never commit credentials. `requirements-api.lock` is the pinned API-only dependency set used by the Docker image, `requirements.txt` contains runtime dependencies, and `requirements-dev.txt` adds the development and test tools.
 
 ## Configuration and database roles
 
@@ -144,16 +153,16 @@ Start only the local control plane, apply migrations, and then run the API:
 
 ```powershell
 docker compose up -d control-plane
-.\.venv\Scripts\python.exe .\clean_mcp\scripts\migrate_control_plane.py
-.\.venv\Scripts\python.exe -m uvicorn clean_mcp.api.app:create_app --factory --env-file .env --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m scripts.migrate_control_plane
+.\.venv\Scripts\python.exe -m uvicorn schemabridge.api.app:create_app --factory --env-file .env --host 127.0.0.1 --port 8000
 ```
 
 POSIX-shell equivalent:
 
 ```bash
 docker compose up -d control-plane
-.venv/bin/python clean_mcp/scripts/migrate_control_plane.py
-.venv/bin/python -m uvicorn clean_mcp.api.app:create_app --factory --env-file .env --host 127.0.0.1 --port 8000
+.venv/bin/python -m scripts.migrate_control_plane
+.venv/bin/python -m uvicorn schemabridge.api.app:create_app --factory --env-file .env --host 127.0.0.1 --port 8000
 ```
 
 Open:
@@ -207,13 +216,13 @@ Migrations are explicit and ordered:
 Inspect the migration set without connecting:
 
 ```powershell
-.\.venv\Scripts\python.exe .\clean_mcp\scripts\migrate_control_plane.py --check
+.\.venv\Scripts\python.exe -m scripts.migrate_control_plane --check
 ```
 
 Apply or re-verify it against `SCHEMABRIDGE_CONTROL_PLANE_DSN`:
 
 ```powershell
-.\.venv\Scripts\python.exe .\clean_mcp\scripts\migrate_control_plane.py
+.\.venv\Scripts\python.exe -m scripts.migrate_control_plane
 ```
 
 Applied checksums are recorded. Re-running is safe; changing an already-applied migration fails rather than silently rewriting the database. Application startup does not mutate the control plane. Compose runs the same explicit migration command in its one-shot service.
@@ -223,17 +232,14 @@ Applied checksums are recorded. Re-running is safe; changing an already-applied 
 The normal suite is credential-free:
 
 ```powershell
-cd clean_mcp
-..\.venv\Scripts\python.exe -m pytest -q
-cd ..
-PowerShell -ExecutionPolicy Bypass -File .\clean_mcp\scripts\verify.ps1
+.\.venv\Scripts\python.exe -m pytest -q
+PowerShell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
 The end-to-end workflow test uses the same FastAPI orchestration boundaries with fake remote execution and validation boundaries:
 
 ```powershell
-cd clean_mcp
-..\.venv\Scripts\python.exe -m pytest tests\test_workflow_end_to_end.py -q
+.\.venv\Scripts\python.exe -m pytest tests\test_workflow_end_to_end.py -q
 ```
 
 Optional disposable PostgreSQL integration tests require the explicit environment flags documented in `.env.example` and a database name containing `test`.
@@ -241,9 +247,7 @@ Optional disposable PostgreSQL integration tests require the explicit environmen
 POSIX-shell commands for the same suite are:
 
 ```bash
-cd clean_mcp
-../.venv/bin/python -m pytest -q
-cd ..
+.venv/bin/python -m pytest -q
 ```
 
 ## Example workflow
@@ -251,18 +255,18 @@ cd ..
 Create and inspect a control-plane workflow without claiming a real migration:
 
 ```powershell
-.\.venv\Scripts\python.exe .\clean_mcp\scripts\demo_workflow.py
+.\.venv\Scripts\python.exe -m scripts.demo_workflow
 ```
 
-In a POSIX shell, run `.venv/bin/python clean_mcp/scripts/demo_workflow.py`.
+In a POSIX shell, run `.venv/bin/python -m scripts.demo_workflow`.
 
 After configuring real source and target profiles, discovery and mapping proposal generation can be demonstrated with:
 
 ```powershell
-.\.venv\Scripts\python.exe .\clean_mcp\scripts\demo_workflow.py --discover
+.\.venv\Scripts\python.exe -m scripts.demo_workflow --discover
 ```
 
-The script deliberately stops before approval and execution. The complete HTTP sequence, response-derived version handling, and separation between local and real demonstrations are in [LOCAL_WORKFLOW_DEMO.md](clean_mcp/docs/LOCAL_WORKFLOW_DEMO.md).
+The script deliberately stops before approval and execution. The complete HTTP sequence, response-derived version handling, and separation between local and real demonstrations are in [LOCAL_WORKFLOW_DEMO.md](docs/LOCAL_WORKFLOW_DEMO.md).
 
 ## Verified versus credential-gated behavior
 
@@ -276,7 +280,7 @@ The script deliberately stops before approval and execution. The complete HTTP s
 
 ## Interview demo
 
-See [INTERVIEW_DEMO.md](clean_mcp/docs/INTERVIEW_DEMO.md) for a 5–7 minute sequence, architecture talking points, failure scenarios, and factual answers to likely questions.
+See [INTERVIEW_DEMO.md](docs/INTERVIEW_DEMO.md) for a 5–7 minute sequence, architecture talking points, failure scenarios, and factual answers to likely questions.
 
 ## Honest limitations
 

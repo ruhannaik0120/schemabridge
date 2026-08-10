@@ -15,5 +15,4 @@ venv
 *.log
 logs
 tests
-clean_mcp/tests
 docs

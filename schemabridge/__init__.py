@@ -1,0 +1,1 @@
+"""SchemaBridge application package."""

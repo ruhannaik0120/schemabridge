@@ -27,7 +27,7 @@ services:
     depends_on:
       control-plane:
         condition: service_healthy
-    command: ["python", "/app/clean_mcp/scripts/migrate_control_plane.py"]
+    command: ["python", "-m", "scripts.migrate_control_plane"]
     restart: "no"
 
   api:
