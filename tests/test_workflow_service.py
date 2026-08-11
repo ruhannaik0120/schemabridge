@@ -69,7 +69,7 @@ def test_canonical_json_and_hash_are_deterministic_and_typed():
 def test_every_artifact_type_has_a_typed_serializer():
  approved=_approved();source=_table('source',_column('first_name'),_column('last_name'),_column('age',ordinal=3));target=_table('people',_column('full_name'),_column('age',ordinal=2));plan=SchemaMappingService().suggest(source,target)
  transform=compile_snowflake_select(approved,staging_database='db',staging_schema='s',staging_table='t');validation=compile_validation_sql(approved,source_schema='schema',source_table='source',target_database='catalog',target_schema='schema',target_table='people')
- metrics={check.check_id:1 for check in validation[0].checks};reconciled=reconcile_validation_results(validation[0],validation[1],source_metrics=metrics,target_metrics=metrics)
+ metrics={check.check_id:1 for check in validation[0].checks};reconciled=reconcile_validation_results(validation[0],validation[1],approved_plan_version=approved.version,source_metrics=metrics,target_metrics=metrics)
  report=MigrationValidationExecutionReport(source_profile_id='pg',target_profile_id='sf',source_sql_summary=validation[0],target_sql_summary=validation[1],validation_report=reconciled,source_execution_status=ValidationExecutionStatus.SUCCEEDED,target_execution_status=ValidationExecutionStatus.SUCCEEDED)
  values=((WorkflowArtifactType.SOURCE_DISCOVERY,source),(WorkflowArtifactType.TARGET_DISCOVERY,target),(WorkflowArtifactType.MAPPING_PLAN,plan),(WorkflowArtifactType.APPROVED_MAPPING_PLAN,approved),(WorkflowArtifactType.TRANSFORMATION_PREVIEW,transform),(WorkflowArtifactType.VALIDATION_PREVIEW,validation),(WorkflowArtifactType.VALIDATION_EXECUTION_REPORT,report))
  assert all(len(serialize_artifact(kind,value)[1])==64 for kind,value in values)

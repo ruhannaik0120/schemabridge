@@ -146,6 +146,8 @@ The queries are generated from the approved mapping, parameterized where needed,
 
 `reconcile_validation_results` converts database metric values to non-negative integer counts and compares matching aliases. Each check becomes `MATCH`, `MISMATCH`, or `UNAVAILABLE`.
 
+The report records the exact version from the persisted approved mapping. The durable orchestrator rejects a validation result whose reported plan version does not match that approved artifact, so mismatched lineage is quarantined rather than persisted as validation evidence.
+
 The overall report is:
 
 - `PASSED` when every available metric matches;

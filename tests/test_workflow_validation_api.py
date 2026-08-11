@@ -21,9 +21,10 @@ from tests.test_workflow_persistence_api import BASE
 
 
 class FakeValidationExecutor:
-    def __init__(self, *, mismatch: bool = False, fail: bool = False, started: Event | None = None, release: Event | None = None) -> None:
+    def __init__(self, *, mismatch: bool = False, fail: bool = False, reported_plan_version: int | None = None, started: Event | None = None, release: Event | None = None) -> None:
         self.mismatch = mismatch
         self.fail = fail
+        self.reported_plan_version = reported_plan_version
         self.started = started
         self.release = release
         self.invocations = 0
@@ -52,7 +53,17 @@ class FakeValidationExecutor:
         target = dict(source)
         if self.mismatch:
             target["row_count"] = 4
-        report = reconcile_validation_results(plan[0], plan[1], source_metrics=source, target_metrics=target)
+        report = reconcile_validation_results(
+            plan[0],
+            plan[1],
+            approved_plan_version=(
+                request.approved_mapping_plan.version
+                if self.reported_plan_version is None
+                else self.reported_plan_version
+            ),
+            source_metrics=source,
+            target_metrics=target,
+        )
         return MigrationValidationExecutionReport(
             source_profile_id=request.source_profile_id,
             target_profile_id=request.target_profile_id,
@@ -173,6 +184,32 @@ def test_success_persists_plan_reconciliation_evidence_audits_and_exact_replay()
     assert validation.plans[0][1].sql.lstrip().upper().startswith("SELECT")
     assert all(token not in (validation.plans[0][0].sql + validation.plans[0][1].sql).upper() for token in ("INSERT ", "UPDATE ", "DELETE ", "BEGIN ", "COMMIT ", "ROLLBACK "))
     assert len(audit) >= 17
+
+
+def test_wrong_approved_plan_version_is_quarantined_not_persisted() -> None:
+    repository = InMemoryWorkflowRepository()
+    migration, validation = FakeExecutor(), FakeValidationExecutor(reported_plan_version=2)
+    with TestClient(_app(repository, migration, validation)) as client:
+        created, approved, _, executed = _executed(client)
+        response = _mutate(
+            client,
+            f"{BASE}/{created['workflow_id']}/validate",
+            _payload(approved, executed),
+            "wrong-plan-version",
+        )
+        workflow = client.get(f"{BASE}/{created['workflow_id']}").json()
+        artifacts = client.get(
+            f"{BASE}/{created['workflow_id']}/artifacts?limit=20"
+        ).json()["items"]
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "VALIDATION_OUTCOME_UNCERTAIN"
+    assert workflow["status"] == "VALIDATION_RECOVERY_REQUIRED"
+    assert artifacts[-1]["artifact_type"] == "VALIDATION_PREVIEW"
+    assert all(
+        item["artifact_type"] != "VALIDATION_EXECUTION_REPORT"
+        for item in artifacts
+    )
 
 
 def test_mismatch_is_review_required_and_not_a_connector_failure() -> None:

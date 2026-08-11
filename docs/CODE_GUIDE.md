@@ -209,7 +209,7 @@ The source relation for the compiled Snowflake statement is a Snowflake staging 
 - **Purpose:** Compares the source and target aggregate metrics and constructs the final migration validation report.
 - **Called by:** Validation execution.
 - **Calls:** Validation domain models only.
-- **Before reading:** It compares generated check IDs and normalized scalar metrics; it never fetches or compares full business rows.
+- **Before reading:** It compares generated check IDs and normalized scalar metrics; it never fetches or compares full business rows. The caller must supply the exact approved mapping plan version, and the durable orchestrator rejects a report whose version does not match its claimed approval artifact.
 - **Interview question:** What happens on a mismatch? The durable orchestrator records the report and enters `VALIDATION_REVIEW_REQUIRED` rather than declaring the migration valid.
 
 ## Where is workflow data persisted?

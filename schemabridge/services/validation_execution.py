@@ -184,6 +184,7 @@ class MigrationValidationExecutionService:
         report = reconcile_validation_results(
             source_sql,
             target_sql,
+            approved_plan_version=request.approved_mapping_plan.version,
             source_metrics=row(source_result),
             target_metrics=row(target_result),
         )

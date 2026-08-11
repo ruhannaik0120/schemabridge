@@ -34,6 +34,7 @@ def reconcile_validation_results(
     source_sql,
     target_sql,
     *,
+    approved_plan_version,
     source_metrics,
     target_metrics,
 ):
@@ -41,7 +42,8 @@ def reconcile_validation_results(
 
     Missing or malformed values remain ``UNAVAILABLE`` rather than becoming a
     false match.  Any mismatch fails the report; otherwise unavailable evidence
-    makes it incomplete, and only a complete match set passes.
+    makes it incomplete, and only a complete match set passes.  The approved
+    plan version is required so the resulting evidence keeps its exact lineage.
     """
 
     results = []
@@ -100,5 +102,5 @@ def reconcile_validation_results(
         mismatched_count=mismatched_count,
         unavailable_count=unavailable_count,
         warnings=(),
-        approved_plan_version=1,
+        approved_plan_version=approved_plan_version,
     )

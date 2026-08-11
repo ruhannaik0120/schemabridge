@@ -186,7 +186,7 @@ The execution service resolves the source and target profiles independently, req
 
 ### 9. Reconciliation
 
-`reconcile_validation_results` compares metric aliases defined in the generated plan. It does not compare arbitrary driver columns. The final report distinguishes matches, mismatches, and unavailable counts.
+`reconcile_validation_results` compares metric aliases defined in the generated plan. It does not compare arbitrary driver columns. The final report distinguishes matches, mismatches, and unavailable counts while preserving the exact approved mapping plan version. Before persistence, the workflow orchestrator verifies that this version matches the approved artifact it claimed.
 
 ### 10. Artifact and audit persistence
 

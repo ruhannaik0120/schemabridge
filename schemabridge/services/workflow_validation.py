@@ -378,9 +378,16 @@ class WorkflowValidationOrchestrator:
                 idempotency_key=idempotency_key,
                 failure_category="VALIDATION_CONNECTOR_OUTCOME_UNCERTAIN",
             )
-        # A report is trusted only when it echoes the claimed plan and profiles;
-        # otherwise it cannot serve as evidence for this workflow run.
-        if not isinstance(report, MigrationValidationExecutionReport) or (report.source_sql_summary, report.target_sql_summary) != plan or report.source_profile_id != run.source_profile_id or report.target_profile_id != run.target_profile_id:
+        # A report is trusted only when it echoes the claimed plan, profiles,
+        # and approved-plan lineage; otherwise it cannot serve as evidence for
+        # this workflow run.
+        if (
+            not isinstance(report, MigrationValidationExecutionReport)
+            or (report.source_sql_summary, report.target_sql_summary) != plan
+            or report.source_profile_id != run.source_profile_id
+            or report.target_profile_id != run.target_profile_id
+            or report.validation_report.approved_plan_version != approved.version
+        ):
             self._complete_uncertain(
                 workflow,
                 running,
