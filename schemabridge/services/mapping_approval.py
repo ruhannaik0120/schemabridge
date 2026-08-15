@@ -20,6 +20,7 @@ from schemabridge.models.mapping import (
     TableMappingIdentity,
     TableMappingPlan,
     TransformationExpression,
+    TransformationExpressionType,
 )
 from schemabridge.models.metadata import ColumnMetadata
 from schemabridge.services.schema_mapping import _type_compatibility
@@ -49,6 +50,27 @@ def _ordered_columns(columns: Iterable[ColumnMetadata]) -> tuple[ColumnMetadata,
             ),
         )
     )
+
+
+def _automatic_transformation(
+    source: ColumnMetadata,
+    target: ColumnMetadata,
+    compatibility: ColumnCompatibility,
+) -> TransformationExpression | None:
+    """Materialize deterministic transformations only for proven-safe mappings."""
+
+    if compatibility is ColumnCompatibility.EXACT:
+        return TransformationExpression(
+            expression_type=TransformationExpressionType.DIRECT_COPY,
+            source_columns=(source.column_name,),
+        )
+    if compatibility is ColumnCompatibility.SAFE:
+        return TransformationExpression(
+            expression_type=TransformationExpressionType.CAST,
+            source_columns=(source.column_name,),
+            target_canonical_type=target.canonical_type,
+        )
+    return None
 
 
 class MappingApprovalService:
@@ -144,6 +166,7 @@ class MappingApprovalService:
             selected_target = decision.target_column if decision.target_column is not None else base.target_column
             if status is MappingApprovalStatus.REJECTED:
                 selected_target = None
+            transformation = decision.transformation
             if status in {MappingApprovalStatus.APPROVED, MappingApprovalStatus.OVERRIDDEN}:
                 if selected_target is None or selected_target not in target_columns:
                     raise ValueError("approved reviewer decision references an unknown target column.")
@@ -165,10 +188,20 @@ class MappingApprovalService:
                     and base.confidence < 0.72
                 ):
                     raise ValueError("low-confidence mappings require OVERRIDDEN status.")
+                if transformation is None:
+                    transformation = _automatic_transformation(
+                        source_column,
+                        target_columns[selected_target],
+                        compatibility,
+                    )
+                if transformation is None:
+                    raise ValueError(
+                        "lossy or incompatible mappings require an explicit transformation."
+                    )
             elif selected_target is not None and selected_target not in target_columns:
                 raise ValueError("reviewer decision references an unknown target column.")
-            if decision.transformation is not None:
-                self._validate_transformation_sources(decision.transformation, source_columns)
+            if transformation is not None:
+                self._validate_transformation_sources(transformation, source_columns)
             approvals.append(ColumnMappingApproval(
                 source_column=source_column.column_name,
                 target_column=selected_target,
@@ -184,7 +217,7 @@ class MappingApprovalService:
                 target_ordinal_position=(target_columns[selected_target].ordinal_position if selected_target in target_columns else None),
                 reviewer_note=decision.reviewer_note,
                 override_reason=decision.override_reason,
-                transformation=decision.transformation,
+                transformation=transformation,
             ))
 
         approved = tuple(

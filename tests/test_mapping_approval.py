@@ -77,6 +77,10 @@ def test_approve_exact_mapping_and_reject_mapping():
         ),
     )
     assert [(item.source_column, item.target_column) for item in approved.approved_mappings] == [("name", "name")]
+    assert approved.approved_mappings[0].transformation == TransformationExpression(
+        expression_type=TransformationExpressionType.DIRECT_COPY,
+        source_columns=("name",),
+    )
     assert approved.rejected_source_columns == ("discard",)
     assert next(item for item in approved.approvals if item.source_column == "discard").target_column is None
 
@@ -85,17 +89,34 @@ def test_override_incompatible_mapping_requires_and_preserves_reason():
     source, target, plan = _inputs(
         [_column("enabled", CanonicalType.BOOLEAN)], [_column("enabled", CanonicalType.STRING)]
     )
+    explicit_cast = TransformationExpression(
+        expression_type=TransformationExpressionType.CAST,
+        source_columns=("enabled",),
+        target_canonical_type=CanonicalType.STRING,
+    )
     approved = MappingApprovalService().apply(
         plan, source=source, target=target,
         decisions=(MappingReviewDecision(
             source_column="enabled", target_column="enabled", status=MappingApprovalStatus.OVERRIDDEN,
             override_reason="Reviewer confirmed conversion policy.",
+            transformation=explicit_cast,
         ),),
     )
     item = approved.approved_mappings[0]
     assert item.status is MappingApprovalStatus.OVERRIDDEN
     assert item.compatibility is ColumnCompatibility.INCOMPATIBLE
     assert item.original_compatibility is ColumnCompatibility.INCOMPATIBLE
+    assert item.transformation == explicit_cast
+    with pytest.raises(ValueError, match="explicit transformation"):
+        MappingApprovalService().apply(
+            plan,
+            source=source,
+            target=target,
+            decisions=(MappingReviewDecision(
+                source_column="enabled", target_column="enabled", status=MappingApprovalStatus.OVERRIDDEN,
+                override_reason="Reviewer confirmed conversion policy.",
+            ),),
+        )
     with pytest.raises(ValueError, match="override_reason"):
         MappingReviewDecision(source_column="enabled", target_column="enabled", status=MappingApprovalStatus.OVERRIDDEN)
     with pytest.raises(ValueError, match="incompatible"):
@@ -121,6 +142,25 @@ def test_manual_safe_remapping_recalculates_effective_compatibility_without_fuzz
     assert item.target_column == "full_name"
     assert item.compatibility is ColumnCompatibility.EXACT
     assert item.original_compatibility is plan.suggestions[0].compatibility
+
+
+def test_safe_conversion_automatically_materializes_a_cast():
+    source, target, plan = _inputs(
+        [_column("created_at", CanonicalType.DATE)],
+        [_column("created_at", CanonicalType.TIMESTAMP)],
+    )
+    approved = MappingApprovalService().apply(
+        plan,
+        source=source,
+        target=target,
+        decisions=(MappingReviewDecision(
+            source_column="created_at", status=MappingApprovalStatus.APPROVED,
+        ),),
+    )
+    transformation = approved.approved_mappings[0].transformation
+    assert transformation is not None
+    assert transformation.expression_type is TransformationExpressionType.CAST
+    assert transformation.target_canonical_type is CanonicalType.TIMESTAMP
 
 
 def test_duplicate_source_decision_target_reuse_and_unknown_references_are_rejected():

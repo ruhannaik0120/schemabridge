@@ -253,19 +253,23 @@ def test_approval_replay_survives_later_artifact_versions_without_duplication() 
     assert len(artifacts) == 5
 
 
-def test_approval_without_transformation_is_rejected_without_durable_changes() -> None:
+def test_unsafe_approval_without_transformation_is_rejected_without_durable_changes() -> None:
     repository = InMemoryWorkflowRepository()
     with TestClient(_application(repository)) as client:
         created = _create(client)
         _, target = _discover_pair(client, created)
         workflow_id = created["workflow_id"]
         proposed = _mapping(client, workflow_id, target["workflow"]["version"])
-        incomplete_decisions = _decisions()
-        incomplete_decisions[2] = {
-            key: value
-            for key, value in incomplete_decisions[2].items()
-            if key != "transformation"
-        }
+        incomplete_decisions = [
+            {"source_column": "first_name", "status": "REJECTED"},
+            {"source_column": "last_name", "status": "REJECTED"},
+            {
+                "source_column": "age",
+                "target_column": "full_name",
+                "status": "OVERRIDDEN",
+                "override_reason": "Reviewer accepts the incompatible mapping.",
+            },
+        ]
 
         rejected = _mutate(
             client,
