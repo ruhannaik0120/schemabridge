@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
+from schemabridge.api.dependencies import get_batch_transport_service
 from schemabridge.models.transport import BatchTransportResult, TransportRelation
 from schemabridge.models.workflow import MigrationWorkflowStatus
 from schemabridge.persistence.errors import (
@@ -29,7 +30,9 @@ from tests.test_workflow_orchestration_api import (
     _create,
     _discover_pair,
     _mapping,
+    _mutate,
 )
+from tests.test_workflow_persistence_api import BASE
 
 
 ATTEMPT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -209,3 +212,73 @@ def test_stale_source_discovery_is_rejected_before_transport_preparation() -> No
         )
 
     assert transport.prepare_calls == transport.run_calls == []
+
+
+def test_api_loads_managed_staging_and_preview_uses_it_automatically() -> None:
+    repository = InMemoryWorkflowRepository()
+    transport = FakeTransport(BatchTransportDisposition.SUCCEEDED)
+    app = _application(repository)
+    app.dependency_overrides[get_batch_transport_service] = lambda: transport
+
+    with TestClient(app) as client:
+        created = _create(client)
+        _, target = _discover_pair(client, created)
+        proposed = _mapping(
+            client,
+            created["workflow_id"],
+            target["workflow"]["version"],
+        )
+        approved = _approve(
+            client,
+            created["workflow_id"],
+            proposed["workflow"]["version"],
+            proposed["artifact"]["artifact_version"],
+        )
+        load_payload = {
+            "expected_version": approved["workflow"]["version"],
+            "source_discovery_artifact_version": 1,
+            "approved_mapping_artifact_version": approved["artifact"]["artifact_version"],
+            "source_profile_id": "pg-source",
+            "target_profile_id": "sf-target",
+            "batch_size": 100,
+            "timeout_seconds": 20,
+            "actor_type": "SERVICE",
+        }
+        loaded = _mutate(
+            client,
+            f"{BASE}/{created['workflow_id']}/load-staging",
+            load_payload,
+            "load-managed-staging",
+        )
+        replay = _mutate(
+            client,
+            f"{BASE}/{created['workflow_id']}/load-staging",
+            load_payload,
+            "load-managed-staging",
+        )
+        preview = _mutate(
+            client,
+            f"{BASE}/{created['workflow_id']}/transformation-previews",
+            {
+                "expected_version": loaded.json()["workflow"]["version"],
+                "approved_mapping_artifact_version": approved["artifact"]["artifact_version"],
+                "statement_type": "INSERT_SELECT",
+                "actor_type": "SERVICE",
+            },
+            "preview-managed-staging",
+        )
+
+    assert loaded.status_code == replay.status_code == 201
+    assert replay.json() == loaded.json()
+    assert loaded.json()["workflow"]["status"] == "STAGED"
+    assert loaded.json()["result"]["rows_read"] == 3
+    staging = loaded.json()["result"]["staging_relation"]
+    assert staging["object_name"].startswith("SB_STAGE_")
+    assert len(transport.run_calls) == 1
+    assert preview.status_code == 201, preview.text
+    assert preview.json()["workflow"]["status"] == "EXECUTION_READY"
+    assert preview.json()["result"]["source_relation"] == [
+        staging["catalog_name"],
+        staging["schema_name"],
+        staging["object_name"],
+    ]

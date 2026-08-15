@@ -6,6 +6,10 @@ import json
 
 from schemabridge.models.execution import MigrationExecutionAttempt, MigrationExecutionEvidence
 from schemabridge.models.workflow_validation import WorkflowValidationRun
+from schemabridge.models.workflow_transport import (
+    WorkflowTransportAttempt,
+    WorkflowTransportEvidence,
+)
 from schemabridge.models.mapping import GeneratedTransformationSql
 from schemabridge.models.validation import (
     GeneratedValidationSql,
@@ -38,6 +42,9 @@ from ..schemas.workflows import (
     WorkflowValidationRunSchema,
     WorkflowArtifactSchema,
     WorkflowRelationSchema,
+    TransportRelationSchema,
+    WorkflowTransportAttemptSchema,
+    WorkflowTransportEvidenceSchema,
 )
 
 
@@ -150,6 +157,31 @@ def execution_evidence_to_api(
     return MigrationExecutionEvidenceSchema(
         **{name: getattr(value, name) for name in value.__dataclass_fields__}
     )
+
+
+def _transport_relation_to_api(value) -> TransportRelationSchema:
+    return TransportRelationSchema(
+        catalog_name=value.catalog_name,
+        schema_name=value.schema_name,
+        object_name=value.object_name,
+    )
+
+
+def transport_attempt_to_api(
+    value: WorkflowTransportAttempt,
+) -> WorkflowTransportAttemptSchema:
+    data = {name: getattr(value, name) for name in value.__dataclass_fields__}
+    data["staging_relation"] = _transport_relation_to_api(value.staging_relation)
+    return WorkflowTransportAttemptSchema(**data)
+
+
+def transport_evidence_to_api(
+    value: WorkflowTransportEvidence,
+) -> WorkflowTransportEvidenceSchema:
+    data = {name: getattr(value, name) for name in value.__dataclass_fields__}
+    data["source_relation"] = _transport_relation_to_api(value.source_relation)
+    data["staging_relation"] = _transport_relation_to_api(value.staging_relation)
+    return WorkflowTransportEvidenceSchema(**data)
 
 
 def validation_run_to_api(value: WorkflowValidationRun) -> WorkflowValidationRunSchema:

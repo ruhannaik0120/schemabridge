@@ -29,7 +29,7 @@ SchemaBridge separates those responsibilities into durable steps. Each important
 The current repository does not provide:
 
 - a frontend, authentication system, background worker, or hosted production deployment;
-- PostgreSQL row extraction, file ingestion, or loading into a Snowflake staging table;
+- file ingestion, change-data capture, or streaming transport;
 - Jira, MCP, Excel, HTML-reporting, AWS, or PySpark integration;
 - AI-based mapping, fuzzy profiling, or automatic resolution of ambiguous mappings;
 - full row-by-row data comparison;
@@ -45,7 +45,7 @@ The durable workflow is designed around:
 
 The connector factory also contains demo, MySQL, and SQL Server implementations. They are reusable lower-level connectors, but the durable execution path explicitly requires a Snowflake target.
 
-Transformation execution produces a Snowflake `INSERT ... SELECT` whose source is a Snowflake staging relation supplied during preview. SchemaBridge does not move PostgreSQL rows into that staging relation.
+After approval, SchemaBridge creates a managed transient Snowflake staging table and copies PostgreSQL rows into it in bounded batches. Transformation execution produces a Snowflake `INSERT ... SELECT` whose source is derived from the persisted staging-load evidence rather than supplied by the client.
 
 ## 6. Source and target systems
 
@@ -61,12 +61,14 @@ The source PostgreSQL profile may be read-only. The Snowflake target profile mus
 4. Persist both discovery artifacts and enter `DISCOVERED`.
 5. Generate a deterministic mapping proposal.
 6. Record explicit reviewer decisions and persist the approved mapping.
-7. Compile and persist a Snowflake transformation preview.
-8. Execute an approved `INSERT ... SELECT` through the exact target profile.
-9. Persist execution evidence and classify the remote outcome.
-10. Compile paired PostgreSQL and Snowflake validation queries.
-11. Execute both read-only queries and reconcile their aggregate metrics.
-12. Persist the validation report and finish as validated, review-required, or recovery-required.
+7. Claim a durable transport attempt, create managed Snowflake staging, and copy source rows in bounded batches.
+8. Persist row-free staging-load evidence and enter `STAGED`.
+9. Compile and persist a Snowflake transformation preview from that staging evidence.
+10. Execute an approved `INSERT ... SELECT` through the exact target profile.
+11. Persist execution evidence and classify the remote outcome.
+12. Compile paired PostgreSQL and Snowflake validation queries.
+13. Execute both read-only queries and reconcile their aggregate metrics.
+14. Persist the validation report and finish as validated, review-required, or recovery-required.
 
 ## 8. Workflow states
 
@@ -175,7 +177,7 @@ Migrations `0001` through `0004` create and extend this model. Migration `0004` 
 
 Every workflow mutation carries an `Idempotency-Key`. SchemaBridge hashes the operation name and canonical request inputs. Repeating the same key and request returns the recorded result; reusing the key for different inputs raises a conflict.
 
-Execution and validation additionally persist command hashes and remote-operation claims so a reconstructed service can return completed evidence without calling the remote database again.
+Transport, execution, and validation additionally persist command hashes and remote-operation claims so a reconstructed service can return completed evidence without calling the remote database again.
 
 ## 19. Optimistic concurrency
 
@@ -212,7 +214,7 @@ Validation uses the same principle and enters `VALIDATION_RECOVERY_REQUIRED` whe
 ## 23. Known limitations
 
 - No live PostgreSQL-to-Snowflake data migration has been executed in the verified local environment.
-- PostgreSQL extraction and Snowflake staging-load components exist, but they are not yet connected to the durable HTTP workflow.
+- Batch transport is synchronous and is not optimized as a bulk-file or streaming engine.
 - Validation compares aggregates rather than every row.
 - Production execution currently supports only Snowflake as the target.
 - There is no authentication or authorization layer around the HTTP API.
@@ -226,7 +228,7 @@ The following are possible future additions, not current functionality:
 
 - authenticated users and role-based approval;
 - a background execution worker and operational monitoring;
-- an explicit extraction/loading stage for moving PostgreSQL data into Snowflake staging;
+- bulk-file transport and asynchronous workers for larger datasets;
 - documented manual recovery workflows and operator tooling;
 - additional durable source/target connector support;
 - stronger deployment hardening and live environment evidence;

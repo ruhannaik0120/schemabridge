@@ -2,7 +2,7 @@
 
 SchemaBridge is a governed PostgreSQL-to-Snowflake migration backend. It discovers schemas, proposes deterministic column mappings, requires human approval, compiles Snowflake SQL, records execution attempts, validates source and target aggregates, and preserves an auditable workflow history.
 
-It is a control plane, not a complete data-transfer platform. The current execution step runs `INSERT ... SELECT` inside Snowflake from a staging relation that must already be available there. SchemaBridge does not extract PostgreSQL rows or load that staging relation.
+It is a synchronous, governed batch-migration backend rather than a general streaming platform. After mapping approval, SchemaBridge creates a managed transient Snowflake staging table, copies PostgreSQL rows into it in bounded batches, and generates the final `INSERT ... SELECT` from that exact table.
 
 ## Documentation
 
@@ -34,10 +34,11 @@ The source and target are data-plane systems. The separate control-plane Postgre
 2. Discover canonical PostgreSQL and Snowflake metadata.
 3. Generate deterministic, evidence-backed mapping suggestions.
 4. Record human approval or overrides as a new immutable artifact.
-5. Compile a Snowflake transformation preview from the approved plan.
-6. Recompile, verify, claim, and execute the approved statement.
-7. Run generated read-only aggregate checks on source and target.
-8. Reconcile results into `VALIDATED` or `VALIDATION_REVIEW_REQUIRED`.
+5. Claim a transport attempt, create managed Snowflake staging, and load PostgreSQL rows in batches.
+6. Compile a Snowflake transformation preview from the approved plan and recorded staging evidence.
+7. Recompile, verify, claim, and execute the approved statement.
+8. Run generated read-only aggregate checks on source and target.
+9. Reconcile results into `VALIDATED` or `VALIDATION_REVIEW_REQUIRED`.
 
 The lower-level `/api/v1/migrations` endpoints expose individual discovery, mapping, preview, and validation operations. The durable `/api/v1/migrations/workflows` endpoints add state transitions, artifacts, audit history, idempotency, optimistic concurrency, execution claims, and recovery states.
 
@@ -49,7 +50,7 @@ The lower-level `/api/v1/migrations` endpoints expose individual discovery, mapp
 - Target writes require a Snowflake profile with `write_enabled=true`.
 - Every mutation requires an `Idempotency-Key`; later mutations also require the expected workflow version.
 - Immutable, hashed artifacts preserve discovery, approval, preview, execution, and validation evidence.
-- Concurrent execution and validation are guarded by durable control-plane claims.
+- Concurrent transport, execution, and validation are guarded by durable control-plane claims.
 - A remote outcome that cannot be proved is quarantined in a recovery state instead of retried automatically.
 - Public errors and audit metadata exclude credentials, DSNs, hosts, query parameters, and raw driver failures.
 
@@ -111,8 +112,8 @@ docs/           Product, architecture, setup, and study guides
 
 ## Current limitations
 
-- No PostgreSQL row extraction or Snowflake staging loader is implemented.
-- No real Snowflake migration has been verified in this local environment.
+- Batch transport currently supports PostgreSQL sources and Snowflake staging targets only.
+- The transport is synchronous and inserts batches through the connector; it is not a high-volume bulk-file or streaming engine.
 - Validation compares generated aggregates, not every row.
 - Uncertain remote outcomes require manual investigation.
 - The durable workflow has no authentication, background worker, frontend, file ingestion, profiling, or production deployment layer.

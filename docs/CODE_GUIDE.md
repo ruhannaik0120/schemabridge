@@ -9,14 +9,15 @@ If you are new to SchemaBridge, read the files in this order.
 5. `schemabridge/models/workflow.py` — workflow states, artifacts, and audit events.
 6. `schemabridge/services/workflow_orchestration.py` — discovery, mapping, approval, and preview coordination.
 7. `schemabridge/services/workflow_execution.py` — approval-gated execution coordination.
-8. `schemabridge/services/workflow_validation.py` — validation and reconciliation coordination.
+8. `schemabridge/services/workflow_transport.py` — durable source-to-staging batch coordination.
+9. `schemabridge/services/workflow_validation.py` — validation and reconciliation coordination.
 9. `schemabridge/services/database_service.py` — profile-bound database access.
 10. `schemabridge/services/schema_mapping.py`, `mapping_approval.py`, and `transformation_sql.py` — the deterministic migration logic.
 11. `schemabridge/persistence/repository.py` and `postgresql.py` — the durable control plane.
 12. `schemabridge/connectors/` — concrete PostgreSQL and Snowflake boundaries.
 13. `Dockerfile`, `compose.yaml`, and `scripts/` — packaging and operation.
 
-The durable migration path currently plans a PostgreSQL-to-Snowflake migration, but execution compiles a Snowflake `INSERT ... SELECT` from a caller-specified relation that must already exist in Snowflake. There is no PostgreSQL row extractor or Snowflake staging loader in this repository. Keep that distinction in mind while reading.
+The durable path discovers and approves a PostgreSQL-to-Snowflake migration, loads PostgreSQL rows into a managed transient Snowflake staging table in bounded batches, and compiles the final `INSERT ... SELECT` from the stored staging evidence.
 
 ## A useful mental model
 
@@ -58,7 +59,7 @@ The data plane contains the source PostgreSQL and target Snowflake databases. Th
 - **Purpose:** Exposes the durable migration workflow under `/api/v1/migrations/workflows`.
 - **Called by:** FastAPI after the app includes its router.
 - **Calls:** Planning, execution, validation, and persistence services supplied by dependency injection.
-- **Important endpoints:** create/get workflow; discover source/target; generate/approve mappings; preview/execute a transformation; validate; transition; list artifacts and audit events.
+- **Important endpoints:** create/get workflow; discover source/target; generate/approve mappings; load managed staging; preview/execute a transformation; validate; transition; list artifacts and audit events.
 - **Before reading:** Every mutation uses an `Idempotency-Key`. After creation, commands also carry the expected workflow version for optimistic concurrency.
 - **Interview question:** Why do routes pass artifact versions rather than SQL? An artifact reference binds execution to reviewed, immutable control-plane evidence.
 
@@ -153,7 +154,7 @@ The shapes involved are defined in `schemabridge/models/mapping.py`: suggestions
 - **Before reading:** Identifiers are quoted, literal values become bound parameters, expression nesting is bounded, and only approved mapped columns are available.
 - **Interview question:** Why recompile during execution? The orchestrator proves that the executable statement still matches the approved mapping rather than trusting stored or client-provided SQL.
 
-The source relation for the compiled Snowflake statement is a Snowflake staging relation supplied during preview. It is not the remote PostgreSQL relation.
+The source relation for the compiled Snowflake statement is the managed Snowflake staging relation recorded by transport evidence. It is not the remote PostgreSQL relation and is not freely chosen by the preview client.
 
 ## Where does database execution happen?
 
@@ -308,4 +309,4 @@ An interview may ask why application startup does not run migrations. Explicit m
 4. Trace one request from its route to an orchestrator, then to the repository and connector boundary.
 5. Be able to explain which guarantees are local and which depend on a remote database outcome.
 
-The most defensible interview summary is: SchemaBridge is a deterministic, approval-gated migration control plane. It makes planning, generated SQL, remote execution attempts, aggregate validation, and audit history explicit. It currently does not implement the data-transfer step that loads PostgreSQL rows into Snowflake staging.
+The most defensible interview summary is: SchemaBridge is a deterministic, approval-gated batch migration backend. It makes planning, bounded source-to-staging transport, generated SQL, remote execution attempts, aggregate validation, and audit history explicit.

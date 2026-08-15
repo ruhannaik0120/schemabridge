@@ -245,7 +245,7 @@ For target discovery and execution:
 
 1. Fill the `snowflake-target` account, database, warehouse, schema, role, username, and secret.
 2. Use a non-production, least-privilege role.
-3. Ensure the transformation preview's staging relation already exists in Snowflake; this repository does not load PostgreSQL data into staging.
+3. Call the durable `load-staging` workflow endpoint after mapping approval; SchemaBridge creates and loads the managed transient Snowflake staging table.
 4. Keep `write_enabled=false` during discovery and review.
 5. Set `write_enabled=true` only for an intentional execution demonstration, then restart the API.
 

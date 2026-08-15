@@ -69,8 +69,10 @@ def test_recruiter_and_demo_documentation_match_implemented_scope() -> None:
         "VALIDATION_REVIEW_REQUIRED",
         "Docker Compose",
         "Swagger",
-        "No real Snowflake migration",
+        "Batch transport currently supports PostgreSQL sources",
     ):
         assert term in readme
     assert "Five-to-seven minute sequence" in interview
+    assert "five-row PostgreSQL-to-Snowflake migration" in interview
+    assert "load-staging" in workflow
     assert "never claims that data moved" in workflow

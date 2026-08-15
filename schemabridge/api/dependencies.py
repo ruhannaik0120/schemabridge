@@ -98,6 +98,16 @@ def get_migration_execution_service(
     return ProfileBoundMigrationExecutionService(database_service_factory)
 
 
+def get_batch_transport_service(
+    database_service_factory=Depends(get_database_service_factory),
+):
+    """Build the profile-bound source-to-managed-staging boundary."""
+
+    from schemabridge.services.batch_transport import ProfileBoundBatchTransportService
+
+    return ProfileBoundBatchTransportService(database_service_factory)
+
+
 def build_workflow_repository(config):
     """Build the app-owned durable repository without opening a connection."""
 
@@ -163,6 +173,20 @@ def get_workflow_execution_orchestrator(
     )
 
 
+def get_workflow_transport_orchestrator(
+    persistence=Depends(get_workflow_persistence_service),
+    transport_service=Depends(get_batch_transport_service),
+):
+    """Assemble the durable source-to-managed-staging coordinator."""
+
+    from schemabridge.services.workflow_transport import WorkflowTransportOrchestrator
+
+    return WorkflowTransportOrchestrator(
+        persistence,
+        transport_service=transport_service,
+    )
+
+
 def get_workflow_validation_orchestrator(
     persistence=Depends(get_workflow_persistence_service),
     validation_compiler=Depends(get_validation_compiler),
@@ -190,11 +214,13 @@ REQUIRED_DEPENDENCY_HOOKS = (
     get_validation_execution_service_factory,
     get_database_service_factory,
     get_migration_execution_service,
+    get_batch_transport_service,
     build_workflow_repository,
     get_workflow_repository,
     get_workflow_persistence_service,
     get_workflow_planning_orchestrator,
     get_workflow_execution_orchestrator,
+    get_workflow_transport_orchestrator,
     get_workflow_validation_orchestrator,
 )
 

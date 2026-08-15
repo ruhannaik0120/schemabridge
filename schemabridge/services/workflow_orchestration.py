@@ -32,6 +32,7 @@ from schemabridge.persistence.artifact_codec import (
     mapping_plan_from_artifact,
     table_metadata_from_artifact,
     transformation_sql_from_artifact,
+    workflow_transport_evidence_from_artifact,
 )
 from schemabridge.persistence.errors import (
     WorkflowArtifactValidationError,
@@ -356,9 +357,9 @@ class WorkflowPlanningOrchestrator:
         *,
         expected_version: int,
         approved_mapping_artifact_version: int,
-        staging_database: str,
-        staging_schema: str,
-        staging_table: str,
+        staging_database: str | None,
+        staging_schema: str | None,
+        staging_table: str | None,
         statement_type: TransformationStatementType,
         idempotency_key: str,
         actor_type: AuditActorType,
@@ -368,21 +369,55 @@ class WorkflowPlanningOrchestrator:
         """Compile and persist SQL from a referenced approved mapping artifact."""
 
         workflow = self.persistence.get_workflow(workflow_id)
-        if workflow.version == expected_version and workflow.status is not MigrationWorkflowStatus.MAPPING_APPROVED:
+        current_command = workflow.version == expected_version
+        if current_command and workflow.status in {
+            MigrationWorkflowStatus.DRAFT,
+            MigrationWorkflowStatus.DISCOVERED,
+            MigrationWorkflowStatus.MAPPING_PROPOSED,
+        }:
             raise WorkflowMappingApprovalRequiredError()
+        if current_command and workflow.status not in {
+            MigrationWorkflowStatus.MAPPING_APPROVED,
+            MigrationWorkflowStatus.STAGED,
+        }:
+            raise WorkflowOperationUnavailableError()
         # Bind the preview to immutable approved evidence rather than accepting
         # mappings or SQL directly from the client.
         approved_artifact = self._referenced_artifact(
             workflow_id,
             approved_mapping_artifact_version,
             WorkflowArtifactType.APPROVED_MAPPING_PLAN,
-            require_latest=workflow.version == expected_version,
+            require_latest=current_command,
         )
         approved = approved_mapping_plan_from_artifact(approved_artifact)
         if not approved.approved_mappings or any(
             item.status is MappingApprovalStatus.PENDING for item in approved.approvals
         ):
             raise WorkflowMappingApprovalRequiredError()
+        if workflow.status is MigrationWorkflowStatus.STAGED:
+            staging_artifact = self.persistence.get_latest_artifact(
+                workflow_id, WorkflowArtifactType.STAGING_LOAD_EVIDENCE
+            )
+            if staging_artifact is None:
+                raise WorkflowRequiredArtifactError()
+            staging_evidence = workflow_transport_evidence_from_artifact(staging_artifact)
+            if (
+                staging_evidence.approved_mapping_artifact_version
+                != approved_mapping_artifact_version
+            ):
+                raise WorkflowStaleArtifactReferenceError()
+            managed = staging_evidence.staging_relation
+            supplied = (staging_database, staging_schema, staging_table)
+            expected = (
+                managed.catalog_name,
+                managed.schema_name,
+                managed.object_name,
+            )
+            if any(value is not None for value in supplied) and supplied != expected:
+                raise WorkflowStaleArtifactReferenceError()
+            staging_database, staging_schema, staging_table = expected
+        elif None in (staging_database, staging_schema, staging_table):
+            raise WorkflowPreviewCompilationError()
         try:
             kwargs = {
                 "staging_database": staging_database,

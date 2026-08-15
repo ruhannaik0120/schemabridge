@@ -38,6 +38,9 @@ from schemabridge.persistence.errors import (
     WorkflowValidationExecutionError,
     WorkflowValidationNotReadyError,
     WorkflowValidationOutcomeUncertainError,
+    WorkflowTransportAlreadyInProgressError,
+    WorkflowTransportConfirmedFailureError,
+    WorkflowTransportOutcomeUncertainError,
 )
 
 from ..adapters.migrations import (
@@ -60,12 +63,15 @@ from ..adapters.workflows import (
     workflow_relation_to_domain,
     workflow_to_api,
     validation_run_to_api,
+    transport_attempt_to_api,
+    transport_evidence_to_api,
 )
 from ..dependencies import (
     get_workflow_persistence_service,
     get_workflow_planning_orchestrator,
     get_workflow_execution_orchestrator,
     get_workflow_validation_orchestrator,
+    get_workflow_transport_orchestrator,
 )
 from ..errors import ApiError
 from ..schemas.common import ErrorResponse
@@ -93,6 +99,8 @@ from ..schemas.workflows import (
     WorkflowExecutionOperationResponse,
     WorkflowValidationCommand,
     WorkflowValidationOperationResponse,
+    WorkflowTransportCommand,
+    WorkflowTransportOperationResponse,
     ValidationExecutionArtifactPayload,
 )
 
@@ -151,6 +159,12 @@ def _raise_workflow_error(error: Exception) -> None:
         raise ApiError(409, "EXECUTION_OUTCOME_UNCERTAIN", "The target execution outcome requires manual investigation.") from None
     if isinstance(error, WorkflowExecutionConfirmedFailureError):
         raise ApiError(502, "EXECUTION_CONFIRMED_FAILED", "The target execution failed and was rolled back.") from None
+    if isinstance(error, WorkflowTransportAlreadyInProgressError):
+        raise ApiError(409, "STAGING_LOAD_ALREADY_IN_PROGRESS", "A staging load is already in progress.") from None
+    if isinstance(error, WorkflowTransportOutcomeUncertainError):
+        raise ApiError(409, "STAGING_LOAD_OUTCOME_UNCERTAIN", "The staging load outcome requires manual investigation.") from None
+    if isinstance(error, WorkflowTransportConfirmedFailureError):
+        raise ApiError(502, "STAGING_LOAD_CONFIRMED_FAILED", "The staging load failed and was safely cleaned up.") from None
     if isinstance(error, WorkflowValidationNotReadyError):
         raise ApiError(409, "WORKFLOW_NOT_READY_FOR_VALIDATION", "The workflow is not ready for validation.") from None
     if isinstance(error, WorkflowValidationAlreadyInProgressError):
@@ -368,6 +382,45 @@ async def approve_workflow_mapping(
         )
     except (TypeError, ValueError):
         raise ApiError(409, "MAPPING_APPROVAL_REQUIRED", "A complete approved mapping is required.") from None
+    except Exception as error:
+        _raise_workflow_error(error)
+        raise
+
+
+@router.post(
+    "/{workflow_id}/load-staging",
+    operation_id="workflow_load_staging",
+    summary="Load the approved source into a managed target staging table",
+    response_model=WorkflowTransportOperationResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses=_ERRORS,
+)
+async def load_workflow_staging(
+    workflow_id: UUID,
+    command: WorkflowTransportCommand,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+    orchestrator=Depends(get_workflow_transport_orchestrator),
+) -> WorkflowTransportOperationResponse:
+    """Create and fill one managed staging table through a durable claim."""
+
+    try:
+        result = orchestrator.run(
+            workflow_id,
+            source_discovery_artifact_version=command.source_discovery_artifact_version,
+            approved_mapping_artifact_version=command.approved_mapping_artifact_version,
+            source_profile_id=command.source_profile_id,
+            target_profile_id=command.target_profile_id,
+            batch_size=command.batch_size,
+            timeout_seconds=command.timeout_seconds,
+            **_planning_context(command, request, idempotency_key),
+        )
+        return WorkflowTransportOperationResponse(
+            workflow=workflow_to_api(result.workflow),
+            artifact=artifact_to_api(result.artifact),
+            attempt=transport_attempt_to_api(result.attempt),
+            result=transport_evidence_to_api(result.evidence),
+        )
     except Exception as error:
         _raise_workflow_error(error)
         raise

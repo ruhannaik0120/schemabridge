@@ -55,7 +55,7 @@ Describe three outcomes:
 
 ### Minute 6–7: limitations
 
-State that no real Snowflake migration was run in this environment. The current statement reads an already-available Snowflake staging relation; PostgreSQL extraction and staging load are not implemented. Validation is aggregate-based. Authentication, frontend, background workers, AWS/PySpark, advanced profiling, and automatic uncertain-outcome resolution are not implemented.
+State the evidence precisely: a five-row PostgreSQL-to-Snowflake migration and aggregate validation passed using a manually prepared staging table. The newer automatic managed-staging path is covered by connector, orchestration, persistence, API, and replay tests, but has not yet been rerun against the live Snowflake account. Transport is synchronous and batch-based, not a bulk-file or streaming engine. Validation is aggregate-based. Authentication, frontend, background workers, AWS/PySpark, advanced profiling, and automatic uncertain-outcome resolution are not implemented.
 
 ## Architecture talking points
 

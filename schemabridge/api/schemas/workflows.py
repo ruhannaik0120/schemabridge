@@ -20,6 +20,7 @@ from schemabridge.models.execution import (
     MigrationTransactionOutcome,
 )
 from schemabridge.models.workflow_validation import WorkflowValidationRunStatus
+from schemabridge.models.workflow_transport import WorkflowTransportAttemptStatus
 
 from .common import ApiSchema
 from .migrations import (
@@ -79,10 +80,19 @@ class WorkflowMappingApprovalCommand(WorkflowPlanningCommand):
 
 class WorkflowTransformationPreviewCommand(WorkflowPlanningCommand):
     approved_mapping_artifact_version: PositiveInt
-    staging_database: Identifier
-    staging_schema: Identifier
-    staging_table: Identifier
+    staging_database: Identifier | None = None
+    staging_schema: Identifier | None = None
+    staging_table: Identifier | None = None
     statement_type: TransformationStatementType
+
+
+class WorkflowTransportCommand(WorkflowPlanningCommand):
+    source_discovery_artifact_version: PositiveInt
+    approved_mapping_artifact_version: PositiveInt
+    source_profile_id: ProfileId
+    target_profile_id: ProfileId
+    batch_size: PositiveInt | None = None
+    timeout_seconds: PositiveInt | None = None
 
 
 class WorkflowExecutionCommand(WorkflowPlanningCommand):
@@ -195,6 +205,59 @@ class WorkflowApprovalOperationResponse(WorkflowArtifactAppendResponse):
 
 class WorkflowTransformationPreviewOperationResponse(WorkflowArtifactAppendResponse):
     result: GeneratedTransformationSqlSchema
+
+
+class TransportRelationSchema(ApiSchema):
+    catalog_name: Identifier | None
+    schema_name: Identifier
+    object_name: Identifier
+
+
+class WorkflowTransportAttemptSchema(ApiSchema):
+    attempt_id: UUID
+    workflow_id: UUID
+    source_discovery_artifact_version: PositiveInt
+    approved_mapping_artifact_version: PositiveInt
+    source_profile_id: ProfileId
+    target_profile_id: ProfileId
+    staging_relation: TransportRelationSchema
+    batch_size: PositiveInt
+    timeout_seconds: PositiveInt
+    transport_fingerprint: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    status: WorkflowTransportAttemptStatus
+    claimed_at: datetime
+    actor_type: AuditActorType
+    idempotency_key: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    actor_reference: ActorReference | None
+    running_at: datetime | None
+    completed_at: datetime | None
+    evidence_artifact_id: UUID | None
+    failure_category: SafeCode | None
+
+
+class WorkflowTransportEvidenceSchema(ApiSchema):
+    attempt_id: UUID
+    workflow_id: UUID
+    source_relation: TransportRelationSchema
+    staging_relation: TransportRelationSchema
+    source_profile_id: ProfileId
+    target_profile_id: ProfileId
+    batch_size: PositiveInt
+    batch_count: NonNegativeInt
+    column_count: PositiveInt
+    rows_read: NonNegativeInt
+    rows_written: NonNegativeInt
+    started_at: datetime
+    completed_at: datetime
+    duration_ms: NonNegativeInt
+    source_discovery_artifact_version: PositiveInt
+    approved_mapping_artifact_version: PositiveInt
+    transport_fingerprint: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+class WorkflowTransportOperationResponse(WorkflowArtifactAppendResponse):
+    attempt: WorkflowTransportAttemptSchema
+    result: WorkflowTransportEvidenceSchema
 
 
 class MigrationExecutionAttemptSchema(ApiSchema):

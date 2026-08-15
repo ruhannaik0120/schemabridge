@@ -55,7 +55,7 @@ These paths meet in the orchestrators. Remote database work is performed outside
 |---|---|---|
 | Application | `schemabridge/api/app.py`, `api/dependencies.py` | Build FastAPI, own application lifecycle, and wire services. |
 | Transport | `api/routes/`, `api/schemas/`, `api/adapters/` | Validate HTTP requests, map transport values to domain values, and translate stable errors. |
-| Orchestration | `services/workflow_orchestration.py`, `workflow_execution.py`, `workflow_validation.py` | Enforce workflow state, artifact, idempotency, and remote-operation rules. |
+| Orchestration | `services/workflow_orchestration.py`, `workflow_transport.py`, `workflow_execution.py`, `workflow_validation.py` | Enforce workflow state, artifact, idempotency, and remote-operation rules. |
 | Domain services | `services/schema_mapping.py`, `mapping_approval.py`, `transformation_sql.py`, `validation_sql.py`, `reconciliation.py` | Perform deterministic mapping, approval, SQL compilation, and result comparison. |
 | Database boundary | `services/database_service.py`, `profile_registry.py`, `connectors/` | Resolve named profiles, apply profile limits, and call vendor drivers. |
 | Domain models | `models/` | Define immutable workflow, mapping, execution, validation, and metadata contracts. |
@@ -89,6 +89,7 @@ The primary stateful API is under `/api/v1/migrations/workflows`:
 | `POST .../{workflow_id}/discover-target` | Discover and persist target metadata. |
 | `POST .../{workflow_id}/mapping-proposals` | Generate and persist mapping suggestions. |
 | `POST .../{workflow_id}/mapping-approvals` | Apply reviewer decisions and persist approval. |
+| `POST .../{workflow_id}/load-staging` | Create managed staging and copy source rows in bounded batches. |
 | `POST .../{workflow_id}/transformation-previews` | Compile and persist transformation SQL. |
 | `POST .../{workflow_id}/execute` | Claim and execute an approved target operation. |
 | `POST .../{workflow_id}/validate` | Claim, execute, and persist paired validation. |
@@ -120,13 +121,13 @@ It is not the migration source database. Keeping it separate lets SchemaBridge a
 
 ### Source PostgreSQL
 
-The source profile is selected by the workflow's `source_profile_id`. It is used for source schema discovery and the PostgreSQL half of validation. SchemaBridge does not persist its credentials and does not extract its rows into Snowflake.
+The source profile is selected by the workflow's `source_profile_id`. It is used for source schema discovery, bounded batch extraction, and the PostgreSQL half of validation. SchemaBridge does not persist its credentials or business rows.
 
 ### Target Snowflake
 
 The target profile is selected by `target_profile_id`. It is used for target discovery, approved write execution, and the Snowflake half of validation. The durable write path checks that the profile database exactly matches the workflow target and that `write_enabled=true`.
 
-The generated `INSERT ... SELECT` reads a Snowflake staging relation supplied during transformation preview. Provisioning that staging relation is outside the current repository.
+The transport orchestrator creates a uniquely named transient staging table, copies bounded source batches, and persists counts and relation identity without business rows. The generated `INSERT ... SELECT` reads the exact staging relation rehydrated from that evidence.
 
 ## Workflow path details
 
@@ -155,11 +156,15 @@ The generated `INSERT ... SELECT` reads a Snowflake staging relation supplied du
 
 `approve_mapping` requires an explicit mapping artifact version and reviewer decisions. `MappingApprovalService` verifies source and target identities, rejects unknown columns and target reuse, and records pending, approved, rejected, or overridden decisions in `APPROVED_MAPPING_PLAN`.
 
-### 6. Transformation preview
+### 6. Managed staging transport
+
+`WorkflowTransportOrchestrator.run` verifies the current discovery and approval artifacts, resolves the exact profiles, and stores a unique claim before remote work. It creates and loads transient Snowflake staging in bounded batches. A proved cleanup returns the workflow to `MAPPING_APPROVED`; an uncertain outcome enters `STAGING_RECOVERY_REQUIRED` and is not retried automatically.
+
+### 7. Transformation preview
 
 `preview_transformation` rehydrates the approved plan and calls `SnowflakeTransformationSqlCompiler`. A `SELECT` can be produced for review, but durable execution requires an `INSERT_SELECT` preview. The preview records source and target relations, parameters, columns, and approved-plan version.
 
-### 7. Execution
+### 8. Execution
 
 `WorkflowExecutionOrchestrator.execute` performs the following checks before a target call:
 
@@ -178,7 +183,7 @@ The generated `INSERT ... SELECT` reads a Snowflake staging relation supplied du
 
 This ordering prevents a stale preview, altered SQL, duplicate caller, or disabled profile from bypassing approval.
 
-### 8. Validation
+### 9. Validation
 
 `WorkflowValidationOrchestrator.validate` requires successful committed execution evidence and the approved mapping. It recompiles a safe validation plan, claims a validation run, marks it running, and delegates to `MigrationValidationExecutionService`.
 

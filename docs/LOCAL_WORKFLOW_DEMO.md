@@ -54,16 +54,17 @@ Configure a read-only PostgreSQL source and a Snowflake target in the ignored `.
 
 This calls `discover-source`, `discover-target`, and `mapping-proposals`, then stops for human review. Inspect the `MAPPING_PLAN` artifact in Swagger.
 
-## 3. Approval, preview, execution, and validation
+## 3. Approval, staging load, preview, execution, and validation
 
 Continue in Swagger so every version and artifact reference comes from the preceding persisted response:
 
-Before compiling or executing, provision the named staging relation in Snowflake by an external process. SchemaBridge uses it as the `INSERT ... SELECT` source and does not extract PostgreSQL rows or load Snowflake staging.
+After approval, call `load-staging`. SchemaBridge creates a uniquely named transient Snowflake table, reads PostgreSQL in bounded batches, loads that table, and returns row-free evidence containing its relation and counts.
 
 | Step | Endpoint | Required references |
 |---|---|---|
 | Approve mapping | `POST /api/v1/migrations/workflows/{id}/mapping-approvals` | current version, mapping artifact version, per-column review decisions |
-| Compile preview | `POST /api/v1/migrations/workflows/{id}/transformation-previews` | current version, approved mapping artifact version, staging relation, `INSERT_SELECT` |
+| Load staging | `POST /api/v1/migrations/workflows/{id}/load-staging` | current version, source discovery and approved mapping artifact versions, exact source and target profiles |
+| Compile preview | `POST /api/v1/migrations/workflows/{id}/transformation-previews` | current version, approved mapping artifact version, `INSERT_SELECT`; staging is derived automatically |
 | Execute | `POST /api/v1/migrations/workflows/{id}/execute` | current version, approved mapping and transformation artifact versions, exact Snowflake profile |
 | Validate | `POST /api/v1/migrations/workflows/{id}/validate` | current version, execution evidence and approved mapping artifact versions, exact source and target profiles |
 
