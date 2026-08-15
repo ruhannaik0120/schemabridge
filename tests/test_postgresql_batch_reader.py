@@ -246,3 +246,19 @@ def test_reader_rejects_invalid_requests_before_connecting(columns, batch_size, 
         )
 
     assert connector.driver.connect_kwargs == []
+
+
+def test_reader_rejects_batch_size_above_profile_limit() -> None:
+    connector = FakeConnector(FakeConnection(FakeCursor([])))
+
+    with pytest.raises(ConfigError, match="profile limit"):
+        tuple(
+            connector.read_batches(
+                relation=_relation(),
+                column_names=("id",),
+                batch_size=501,
+                timeout_seconds=5,
+            )
+        )
+
+    assert connector.driver.connect_kwargs == []

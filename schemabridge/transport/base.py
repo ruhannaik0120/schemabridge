@@ -25,9 +25,13 @@ class BatchTransportConnectionError(BatchTransportError):
     """Raised when a transport connector cannot establish or retain a connection."""
 
 
+class UnsupportedStagingTypeError(BatchTransportError):
+    """Raised when a source type cannot be represented in staging without guessing."""
+
+
 @runtime_checkable
 class BatchSourceReader(Protocol):
-    """Read an ordered relation incrementally without loading it all into memory."""
+    """Read a relation incrementally without loading it all into memory."""
 
     def read_batches(
         self,
@@ -53,7 +57,7 @@ class StagingTableWriter(Protocol):
     def write_batch(
         self,
         *,
-        relation: TransportRelation,
+        definition: StagingTableDefinition,
         batch: DataBatch,
         timeout_seconds: int,
     ) -> BatchWriteResult: ...
@@ -72,4 +76,5 @@ __all__ = [
     "BatchTransportError",
     "BatchTransportTimeoutError",
     "StagingTableWriter",
+    "UnsupportedStagingTypeError",
 ]

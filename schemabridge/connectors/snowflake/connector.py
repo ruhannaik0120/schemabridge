@@ -9,6 +9,7 @@ migration execution after higher layers enforce approval and write permission.
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 from collections.abc import Mapping
 from decimal import Decimal
@@ -34,6 +35,14 @@ from schemabridge.models.discovery import (
     SchemaMetadata,
     TableMetadata,
 )
+from schemabridge.models.metadata import CanonicalType
+from schemabridge.models.transport import (
+    BatchWriteResult,
+    DataBatch,
+    StagingColumn,
+    StagingTableDefinition,
+    TransportRelation,
+)
 from schemabridge.normalizers._discovery_common import deduplicate_and_sort_columns, deduplicate_models
 from schemabridge.normalizers.snowflake import normalize_snowflake_column
 from schemabridge.normalizers.snowflake_discovery import (
@@ -42,6 +51,12 @@ from schemabridge.normalizers.snowflake_discovery import (
     normalize_snowflake_key_constraint,
     normalize_snowflake_object,
     normalize_snowflake_schema,
+)
+from schemabridge.transport.base import (
+    BatchTransportConnectionError,
+    BatchTransportError,
+    BatchTransportTimeoutError,
+    UnsupportedStagingTypeError,
 )
 
 if TYPE_CHECKING:
@@ -337,6 +352,302 @@ class SnowflakeConnector(DatabaseConnector):
         if configured and requested != configured:
             raise ConfigError("Requested database must exactly match the configured database.")
         return requested
+
+    def _require_staging_write_profile(self) -> ConnectionConfig | ConnectionProfile:
+        """Require operator-controlled write permission from a named profile."""
+
+        profile = self._profile()
+        if self._connection_profile is None or profile.write_enabled is not True:
+            raise ConfigError(
+                "A write-enabled named profile is required for staging operations."
+            )
+        return profile
+
+    @staticmethod
+    def _quote_staging_identifier(value: str) -> str:
+        SnowflakeConnector._validate_discovery_identifier(value, "identifier")
+        return '"' + value.replace('"', '""') + '"'
+
+    @classmethod
+    def _staging_relation_sql(cls, relation: TransportRelation) -> str:
+        if relation.catalog_name is None:
+            raise ConfigError("A database is required for a Snowflake staging table.")
+        return ".".join(
+            cls._quote_staging_identifier(value)
+            for value in (
+                relation.catalog_name,
+                relation.schema_name,
+                relation.object_name,
+            )
+        )
+
+    @staticmethod
+    def _snowflake_staging_type(column: StagingColumn) -> str:
+        """Choose a lossless landing type or fail instead of guessing."""
+
+        kind = column.canonical_type
+        if kind is CanonicalType.STRING:
+            return "VARCHAR"
+        if kind is CanonicalType.INTEGER:
+            return "NUMBER(38,0)"
+        if kind is CanonicalType.DECIMAL:
+            precision = column.numeric_precision
+            scale = column.numeric_scale
+            if (
+                precision is not None
+                and scale is not None
+                and 1 <= precision <= 38
+                and 0 <= scale <= precision
+            ):
+                return f"NUMBER({precision},{scale})"
+            # Text preserves digits when Snowflake NUMBER cannot safely hold
+            # the declared source precision or scale.
+            return "VARCHAR"
+        if kind is CanonicalType.FLOAT:
+            return "FLOAT"
+        if kind is CanonicalType.BOOLEAN:
+            return "BOOLEAN"
+        if kind is CanonicalType.DATE:
+            return "DATE"
+        if kind is CanonicalType.TIME:
+            precision = column.datetime_precision
+            if precision is None:
+                return "TIME(9)"
+            return (
+                f"TIME({precision})"
+                if precision <= 9
+                else "VARCHAR"
+            )
+        if kind is CanonicalType.TIMESTAMP:
+            precision = column.datetime_precision
+            if precision is None:
+                return "TIMESTAMP_NTZ(9)"
+            return (
+                f"TIMESTAMP_NTZ({precision})"
+                if precision <= 9
+                else "VARCHAR"
+            )
+        if kind is CanonicalType.TIMESTAMP_TZ:
+            precision = column.datetime_precision
+            if precision is None:
+                return "TIMESTAMP_TZ(9)"
+            return (
+                f"TIMESTAMP_TZ({precision})"
+                if precision <= 9
+                else "VARCHAR"
+            )
+        if kind is CanonicalType.BINARY:
+            return "BINARY"
+        if kind is CanonicalType.SEMI_STRUCTURED:
+            return "VARIANT"
+        raise UnsupportedStagingTypeError(
+            "The source type cannot be represented safely in Snowflake staging."
+        )
+
+    @classmethod
+    def _staging_column_sql(cls, column: StagingColumn) -> str:
+        rendered = (
+            f"{cls._quote_staging_identifier(column.name)} "
+            f"{cls._snowflake_staging_type(column)}"
+        )
+        return rendered + (" NOT NULL" if column.nullable is False else "")
+
+    @staticmethod
+    def _validate_staging_timeout(timeout_seconds: int) -> None:
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int)
+            or timeout_seconds <= 0
+        ):
+            raise ConfigError("timeout_seconds must be a positive integer.")
+
+    @staticmethod
+    def _raise_staging_error(
+        error: BaseException,
+        *,
+        connection_phase: bool = False,
+    ) -> NoReturn:
+        sqlstate = getattr(error, "sqlstate", None)
+        error_number = getattr(error, "errno", None)
+        if isinstance(error, TimeoutError) or error_number == 604 or sqlstate == "57014":
+            raise BatchTransportTimeoutError("Staging operation timed out.") from None
+        if connection_phase or (isinstance(sqlstate, str) and sqlstate.startswith("08")):
+            raise BatchTransportConnectionError("Staging connection failed.") from None
+        raise BatchTransportError("Staging operation failed.") from None
+
+    @contextlib.contextmanager
+    def _staging_connection(self, database: str, timeout_seconds: int):
+        """Open one explicit Snowflake transaction and sanitize all failures."""
+
+        connection = None
+        try:
+            profile = self._require_staging_write_profile()
+            kwargs = self._connection_kwargs(profile, database)
+            kwargs["autocommit"] = False
+            kwargs["login_timeout"] = timeout_seconds
+            connection = self._driver().connect(**kwargs)
+            try:
+                yield connection
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    connection.rollback()
+                raise
+            finally:
+                connection.close()
+        except (ConfigError, BatchTransportError):
+            raise
+        except Exception as error:
+            self._raise_staging_error(error, connection_phase=connection is None)
+
+    def _resolve_staging_database(
+        self,
+        relation: TransportRelation,
+        profile: ConnectionConfig | ConnectionProfile,
+    ) -> str:
+        return self._resolve_discovery_database(relation.catalog_name, profile)
+
+    def prepare_staging_table(
+        self,
+        *,
+        definition: StagingTableDefinition,
+        timeout_seconds: int,
+    ) -> None:
+        """Create one non-overwriting transient table shaped like the source."""
+
+        if not isinstance(definition, StagingTableDefinition):
+            raise TypeError("definition must be a StagingTableDefinition.")
+        self._validate_staging_timeout(timeout_seconds)
+        profile = self._require_staging_write_profile()
+        database = self._resolve_staging_database(definition.relation, profile)
+        relation_sql = self._staging_relation_sql(definition.relation)
+        columns_sql = ", ".join(
+            self._staging_column_sql(column) for column in definition.columns
+        )
+        query = f"CREATE TRANSIENT TABLE {relation_sql} ({columns_sql})"
+
+        with self._staging_connection(database, timeout_seconds) as connection:
+            cursor = connection.cursor()
+            try:
+                self._execute(cursor, query, timeout_seconds=timeout_seconds)
+                connection.commit()
+            finally:
+                cursor.close()
+
+    @staticmethod
+    def _staging_bind_value(value: object, column: StagingColumn) -> object:
+        if value is None:
+            return None
+        if column.canonical_type is CanonicalType.SEMI_STRUCTURED:
+            try:
+                return json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            except (TypeError, ValueError):
+                raise BatchTransportError(
+                    "A semi-structured staging value is invalid."
+                ) from None
+        rendered_type = SnowflakeConnector._snowflake_staging_type(column)
+        if (
+            rendered_type == "VARCHAR"
+            and column.canonical_type is not CanonicalType.STRING
+        ):
+            return str(value)
+        return value
+
+    def write_batch(
+        self,
+        *,
+        definition: StagingTableDefinition,
+        batch: DataBatch,
+        timeout_seconds: int,
+    ) -> BatchWriteResult:
+        """Insert one complete batch with bound values and exact row evidence."""
+
+        if not isinstance(definition, StagingTableDefinition):
+            raise TypeError("definition must be a StagingTableDefinition.")
+        if not isinstance(batch, DataBatch):
+            raise TypeError("batch must be a DataBatch.")
+        self._validate_staging_timeout(timeout_seconds)
+        expected_columns = tuple(column.name for column in definition.columns)
+        if batch.column_names != expected_columns:
+            raise BatchTransportError(
+                "Batch columns do not match the staging table definition."
+            )
+
+        profile = self._require_staging_write_profile()
+        if batch.row_count > profile.max_rows:
+            raise ConfigError("Batch row count exceeds the selected profile limit.")
+        database = self._resolve_staging_database(definition.relation, profile)
+        relation_sql = self._staging_relation_sql(definition.relation)
+        columns_sql = ", ".join(
+            self._quote_staging_identifier(name) for name in batch.column_names
+        )
+        row_placeholders = "(" + ", ".join(
+            "PARSE_JSON(%s)"
+            if column.canonical_type is CanonicalType.SEMI_STRUCTURED
+            else "%s"
+            for column in definition.columns
+        ) + ")"
+        values_sql = ", ".join(row_placeholders for _ in batch.rows)
+        query = f"INSERT INTO {relation_sql} ({columns_sql}) VALUES {values_sql}"
+        parameters = tuple(
+            self._staging_bind_value(value, column)
+            for row in batch.rows
+            for value, column in zip(row, definition.columns)
+        )
+
+        with self._staging_connection(database, timeout_seconds) as connection:
+            cursor = connection.cursor()
+            try:
+                self._execute(
+                    cursor,
+                    query,
+                    parameters,
+                    timeout_seconds=timeout_seconds,
+                )
+                rows_written = cursor.rowcount
+                if (
+                    isinstance(rows_written, bool)
+                    or not isinstance(rows_written, int)
+                    or rows_written != batch.row_count
+                ):
+                    raise BatchTransportError(
+                        "Snowflake did not confirm the complete staging batch."
+                    )
+                connection.commit()
+            finally:
+                cursor.close()
+        return BatchWriteResult(
+            batch_number=batch.batch_number,
+            rows_received=batch.row_count,
+            rows_written=rows_written,
+        )
+
+    def drop_staging_table(
+        self,
+        *,
+        relation: TransportRelation,
+        timeout_seconds: int,
+    ) -> None:
+        """Idempotently remove one exactly identified managed staging table."""
+
+        if not isinstance(relation, TransportRelation):
+            raise TypeError("relation must be a TransportRelation.")
+        self._validate_staging_timeout(timeout_seconds)
+        profile = self._require_staging_write_profile()
+        database = self._resolve_staging_database(relation, profile)
+        query = f"DROP TABLE IF EXISTS {self._staging_relation_sql(relation)}"
+
+        with self._staging_connection(database, timeout_seconds) as connection:
+            cursor = connection.cursor()
+            try:
+                self._execute(cursor, query, timeout_seconds=timeout_seconds)
+                connection.commit()
+            finally:
+                cursor.close()
 
     @staticmethod
     def _resolve_discovery_object_types(

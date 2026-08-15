@@ -381,6 +381,8 @@ class PostgreSQLConnector(DatabaseConnector):
         self._validate_transport_integer(timeout_seconds, "timeout_seconds")
 
         profile = self._profile()
+        if batch_size > profile.max_rows:
+            raise ConfigError("batch_size exceeds the selected profile limit.")
         database = self._resolve_discovery_database(relation.catalog_name, profile)
         columns_sql = ", ".join(
             self._quote_transport_identifier(name) for name in column_names
