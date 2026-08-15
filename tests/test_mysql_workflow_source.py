@@ -45,8 +45,10 @@ class DiscoveryCursor:
         self.description = None
         self.rows = []
         self.closed = False
+        self.queries = []
 
-    def execute(self, _sql, _parameters=None):
+    def execute(self, sql, _parameters=None):
+        self.queries.append(sql)
         columns, rows = self.responses.pop(0)
         self.description = [(column,) for column in columns]
         self.rows = rows
@@ -103,6 +105,23 @@ class FakeMySQLConnector(MySQLConnector):
 
     def connect(self, database=None, timeout_seconds=None):
         return self.connection
+
+
+def test_mysql_connection_check_avoids_reserved_utc_time_alias() -> None:
+    cursor = DiscoveryCursor(
+        (
+            (
+                ("server_name", "version", "logged_in_user", "connection_checked_at"),
+                (("mysql", "8.4", "reader", "2026-08-15 00:00:00"),),
+            ),
+        )
+    )
+
+    result = FakeMySQLConnector(FakeConnection(cursor)).test_connection(database="shop")
+
+    assert result["connection_status"] == "connected"
+    assert "AS connection_checked_at" in cursor.queries[0]
+    assert "AS utc_time" not in cursor.queries[0]
 
 
 def test_mysql_discovery_returns_canonical_table_metadata() -> None:

@@ -193,7 +193,7 @@ class MySQLConnector(DatabaseConnector):
                     @@hostname AS server_name,
                     VERSION() AS version,
                     USER() AS logged_in_user,
-                    UTC_TIMESTAMP() AS utc_time
+                    UTC_TIMESTAMP() AS connection_checked_at
                 """
             )
             snapshot = self._fetch_rows(cursor)
