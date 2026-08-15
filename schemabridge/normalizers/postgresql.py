@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -36,6 +37,21 @@ def _canonical_type(native_type: str | None, numeric_scale: int | None) -> Canon
     if normalized in {"json", "jsonb", "xml", "hstore"}:
         return CanonicalType.SEMI_STRUCTURED
     return CanonicalType.UNKNOWN
+
+
+def _numeric_precision(row: Mapping[str, Any], canonical_type: CanonicalType) -> int | None:
+    """Normalize PostgreSQL binary integer precision to decimal digits."""
+
+    precision = optional_int(value_for(row, "numeric_precision"))
+    radix = optional_int(value_for(row, "numeric_precision_radix"))
+    if (
+        canonical_type is CanonicalType.INTEGER
+        and radix == 2
+        and precision is not None
+        and precision > 0
+    ):
+        return math.floor((precision - 1) * math.log10(2)) + 1
+    return precision
 
 
 def _canonical_type_value(value: Any, fallback_native_type: str | None) -> CanonicalType | None:
@@ -76,6 +92,7 @@ def normalize_postgresql_column(
 
     native_type = optional_text(value_for(row, "data_type", "native_type"))
     numeric_scale = optional_int(value_for(row, "numeric_scale"))
+    canonical_type = _canonical_type(native_type, numeric_scale)
     element_native_type = optional_text(value_for(row, "element_native_type", "array_element_type"))
     return ColumnMetadata(
         catalog_name=optional_text(catalog_name),
@@ -84,10 +101,10 @@ def normalize_postgresql_column(
         column_name=optional_text(value_for(row, "column_name")) or "",
         ordinal_position=optional_int(value_for(row, "ordinal_position")),
         native_type=native_type,
-        canonical_type=_canonical_type(native_type, numeric_scale),
+        canonical_type=canonical_type,
         nullable=optional_nullable(value_for(row, "is_nullable", "nullable")),
         character_length=optional_int(value_for(row, "character_maximum_length", "character_length")),
-        numeric_precision=optional_int(value_for(row, "numeric_precision")),
+        numeric_precision=_numeric_precision(row, canonical_type),
         numeric_scale=numeric_scale,
         datetime_precision=optional_int(value_for(row, "datetime_precision")),
         is_primary_key=is_primary_key if is_primary_key is not None else optional_bool(value_for(row, "is_primary_key")),

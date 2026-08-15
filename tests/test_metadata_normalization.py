@@ -49,6 +49,28 @@ def test_postgresql_row_normalizes_lowercase_keys_and_preserves_identifiers():
     assert metadata.is_foreign_key is None
 
 
+@pytest.mark.parametrize(
+    ("native_type", "binary_precision", "decimal_precision"),
+    [("smallint", 16, 5), ("integer", 32, 10), ("bigint", 64, 19)],
+)
+def test_postgresql_binary_integer_precision_is_normalized_to_decimal_digits(
+    native_type, binary_precision, decimal_precision
+):
+    metadata = normalize_postgresql_column(
+        {
+            "column_name": "identifier",
+            "data_type": native_type,
+            "numeric_precision": binary_precision,
+            "numeric_precision_radix": 2,
+            "numeric_scale": 0,
+        },
+        catalog_name="source",
+        schema_name="public",
+        table_name="items",
+    )
+    assert metadata.numeric_precision == decimal_precision
+
+
 def test_snowflake_row_normalizes_uppercase_keys_to_the_same_model_contract():
     metadata = normalize_snowflake_column(
         {

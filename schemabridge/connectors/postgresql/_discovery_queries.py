@@ -121,6 +121,7 @@ SELECT
     (NOT a.attnotnull) AS is_nullable,
     ic.character_maximum_length::integer AS character_maximum_length,
     ic.numeric_precision::integer AS numeric_precision,
+    ic.numeric_precision_radix::integer AS numeric_precision_radix,
     ic.numeric_scale::integer AS numeric_scale,
     ic.datetime_precision::integer AS datetime_precision,
     CASE WHEN a.attgenerated = '' THEN pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) ELSE NULL END::text AS column_default,

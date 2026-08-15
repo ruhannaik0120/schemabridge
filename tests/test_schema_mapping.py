@@ -109,6 +109,17 @@ def test_integer_widening_and_date_to_timestamp_are_safe():
     assert all(item.compatibility is ColumnCompatibility.SAFE for item in plan.suggestions)
 
 
+def test_decimal_capacity_widening_for_same_canonical_integer_is_exact():
+    suggestion = _plan(
+        [_column("customer_id", CanonicalType.INTEGER, precision=19)],
+        [_column("customer_id", CanonicalType.INTEGER, precision=38)],
+    ).suggestions[0]
+
+    assert suggestion.target_column == "customer_id"
+    assert suggestion.compatibility is ColumnCompatibility.EXACT
+    assert suggestion.decision is MappingDecision.SUGGESTED
+
+
 @pytest.mark.parametrize(
     ("source", "target"),
     [
