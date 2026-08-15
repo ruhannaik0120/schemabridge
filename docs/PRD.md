@@ -213,7 +213,7 @@ Validation uses the same principle and enters `VALIDATION_RECOVERY_REQUIRED` whe
 
 ## 23. Known limitations
 
-- No live PostgreSQL-to-Snowflake data migration has been executed in the verified local environment.
+- Live verification has covered one five-row PostgreSQL-to-Snowflake workflow with automatic managed staging, committed execution, aggregate validation, and exact replay; production scale and failure recovery have not been live-tested.
 - Batch transport is synchronous and is not optimized as a bulk-file or streaming engine.
 - Validation compares aggregates rather than every row.
 - Production execution currently supports only Snowflake as the target.

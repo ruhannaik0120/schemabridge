@@ -73,6 +73,6 @@ def test_recruiter_and_demo_documentation_match_implemented_scope() -> None:
     ):
         assert term in readme
     assert "Five-to-seven minute sequence" in interview
-    assert "five-row PostgreSQL-to-Snowflake migration" in interview
+    assert "live five-row PostgreSQL-to-Snowflake workflow" in interview
     assert "load-staging" in workflow
     assert "never claims that data moved" in workflow

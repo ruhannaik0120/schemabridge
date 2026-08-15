@@ -42,6 +42,8 @@ The source and target are data-plane systems. The separate control-plane Postgre
 
 The lower-level `/api/v1/migrations` endpoints expose individual discovery, mapping, preview, and validation operations. The durable `/api/v1/migrations/workflows` endpoints add state transitions, artifacts, audit history, idempotency, optimistic concurrency, execution claims, and recovery states.
 
+Live verification on 2026-08-15 moved five PostgreSQL rows through a SchemaBridge-created Snowflake staging table in three batches, committed five target inserts, passed all 13 aggregate checks, and confirmed that exact transport and execution replays did not duplicate rows.
+
 ## Key safety properties
 
 - The workflow API never accepts arbitrary migration SQL from a client.

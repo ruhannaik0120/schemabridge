@@ -55,7 +55,7 @@ Describe three outcomes:
 
 ### Minute 6–7: limitations
 
-State the evidence precisely: a five-row PostgreSQL-to-Snowflake migration and aggregate validation passed using a manually prepared staging table. The newer automatic managed-staging path is covered by connector, orchestration, persistence, API, and replay tests, but has not yet been rerun against the live Snowflake account. Transport is synchronous and batch-based, not a bulk-file or streaming engine. Validation is aggregate-based. Authentication, frontend, background workers, AWS/PySpark, advanced profiling, and automatic uncertain-outcome resolution are not implemented.
+State the evidence precisely: a live five-row PostgreSQL-to-Snowflake workflow passed using automatic managed staging. SchemaBridge created the transient table, loaded three batches, committed five target inserts, passed all 13 aggregate checks, and exact replays left the target at five rows. This proves the small controlled path, not production scale. Transport is synchronous and batch-based, not a bulk-file or streaming engine. Validation is aggregate-based. Authentication, frontend, background workers, AWS/PySpark, advanced profiling, and automatic uncertain-outcome resolution are not implemented.
 
 ## Architecture talking points
 
