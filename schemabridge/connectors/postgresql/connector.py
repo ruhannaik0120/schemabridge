@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from schemabridge.config import Config, ConfigError, ConnectionConfig
@@ -30,6 +30,7 @@ from schemabridge.models.discovery import (
     SchemaMetadata,
     TableMetadata,
 )
+from schemabridge.models.transport import DataBatch, TransportRelation
 from schemabridge.normalizers._discovery_common import (
     _preference_key,
     foreign_key_coverage,
@@ -40,6 +41,11 @@ from schemabridge.normalizers.postgresql_discovery import (
     normalize_postgresql_object,
     normalize_postgresql_schema,
     normalize_postgresql_table,
+)
+from schemabridge.transport.base import (
+    BatchTransportConnectionError,
+    BatchTransportError,
+    BatchTransportTimeoutError,
 )
 
 if TYPE_CHECKING:
@@ -297,6 +303,113 @@ class PostgreSQLConnector(DatabaseConnector):
         if configured and requested != configured:
             raise ConfigError("Requested database must exactly match the configured database.")
         return requested
+
+    @staticmethod
+    def _quote_transport_identifier(value: str) -> str:
+        """Render one exact PostgreSQL identifier without treating it as SQL."""
+
+        PostgreSQLConnector._validate_discovery_identifier(value, "identifier")
+        return '"' + value.replace('"', '""') + '"'
+
+    @staticmethod
+    def _validate_transport_integer(value: int, field_name: str) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ConfigError(f"{field_name} must be a positive integer.")
+
+    @staticmethod
+    def _raise_transport_error(
+        error: BaseException,
+        *,
+        connection_phase: bool = False,
+    ) -> NoReturn:
+        """Translate driver failures without leaking source data or driver text."""
+
+        sqlstate = getattr(error, "sqlstate", None)
+        if isinstance(error, TimeoutError) or sqlstate == "57014":
+            raise BatchTransportTimeoutError("Batch extraction timed out.") from None
+        if connection_phase or (isinstance(sqlstate, str) and sqlstate.startswith("08")):
+            raise BatchTransportConnectionError(
+                "Batch extraction connection failed."
+            ) from None
+        raise BatchTransportError("Batch extraction failed.") from None
+
+    @contextlib.contextmanager
+    def _batch_transport_connection(self, database: str, timeout_seconds: int):
+        """Open a read transaction and always roll it back and close it."""
+
+        opened = False
+        try:
+            profile = self._profile()
+            kwargs = self._connection_kwargs(profile, database, timeout_seconds)
+            connection = self._driver().connect(**kwargs)
+            opened = True
+            try:
+                try:
+                    yield connection
+                except BaseException:
+                    with contextlib.suppress(Exception):
+                        connection.rollback()
+                    raise
+                else:
+                    connection.rollback()
+            finally:
+                connection.close()
+        except (ConfigError, BatchTransportError):
+            raise
+        except Exception as error:
+            self._raise_transport_error(error, connection_phase=not opened)
+
+    def read_batches(
+        self,
+        *,
+        relation: TransportRelation,
+        column_names: tuple[str, ...],
+        batch_size: int,
+        timeout_seconds: int,
+    ) -> Iterator[DataBatch]:
+        """Yield source rows through a server-side cursor in bounded batches."""
+
+        if not isinstance(relation, TransportRelation):
+            raise TypeError("relation must be a TransportRelation.")
+        if not isinstance(column_names, tuple) or not column_names:
+            raise ConfigError("column_names must be a non-empty tuple.")
+        if len(set(column_names)) != len(column_names):
+            raise ConfigError("column_names must be unique.")
+        for column_name in column_names:
+            self._validate_discovery_identifier(column_name, "column_name")
+        self._validate_transport_integer(batch_size, "batch_size")
+        self._validate_transport_integer(timeout_seconds, "timeout_seconds")
+
+        profile = self._profile()
+        database = self._resolve_discovery_database(relation.catalog_name, profile)
+        columns_sql = ", ".join(
+            self._quote_transport_identifier(name) for name in column_names
+        )
+        relation_sql = ".".join(
+            (
+                self._quote_transport_identifier(relation.schema_name),
+                self._quote_transport_identifier(relation.object_name),
+            )
+        )
+        query = f"SELECT {columns_sql} FROM {relation_sql}"
+
+        with self._batch_transport_connection(database, timeout_seconds) as connection:
+            cursor = connection.cursor(name="schemabridge_batch_reader")
+            try:
+                cursor.execute(query)
+                batch_number = 1
+                while True:
+                    rows = tuple(tuple(row) for row in cursor.fetchmany(batch_size))
+                    if not rows:
+                        break
+                    yield DataBatch(
+                        batch_number=batch_number,
+                        column_names=column_names,
+                        rows=rows,
+                    )
+                    batch_number += 1
+            finally:
+                cursor.close()
 
     @staticmethod
     def _resolve_discovery_object_types(
