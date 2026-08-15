@@ -13,6 +13,7 @@ from schemabridge.connectors.factory import ConnectorFactory
 from schemabridge.connectors.postgresql.connector import PostgreSQLConnector
 from schemabridge.connectors.snowflake.connector import SnowflakeConnector
 from schemabridge.models.connection_profile import ConnectionProfile
+from schemabridge.models.mapping import SqlDialect
 from schemabridge.services.database_service import DatabaseAccessError, DatabaseService
 
 
@@ -23,6 +24,9 @@ class FakeConnector:
     def __init__(self, *, failure: Exception | None = None):
         self.failure = failure
         self.calls: list[tuple] = []
+
+    def validation_sql_dialect(self):
+        return SqlDialect.SNOWFLAKE
 
     def execute_query(
         self,
@@ -183,6 +187,7 @@ def test_contexts_are_credential_free_and_clamp_timeout():
     assert validation == {
         "profile_id": "snowflake-target",
         "db_type": "snowflake",
+        "validation_dialect": "SNOWFLAKE",
         "timeout_seconds": 29,
     }
     assert all(

@@ -2,7 +2,7 @@
 
 ## 1. Product overview
 
-SchemaBridge is a governed backend for planning, approving, executing, and validating a PostgreSQL-to-Snowflake migration workflow. It exposes FastAPI endpoints, stores durable workflow evidence in a separate PostgreSQL control plane, resolves database credentials through named runtime profiles, and delegates database operations to connector implementations.
+SchemaBridge is a governed backend for planning, approving, executing, and validating PostgreSQL/MySQL-to-Snowflake migration workflows. It exposes FastAPI endpoints, stores durable workflow evidence in a separate PostgreSQL control plane, resolves database credentials through named runtime profiles, and delegates database operations to connector implementations.
 
 The current product is deterministic Python code. Mapping, SQL generation, execution checks, and validation do not use AI, an MCP server, or an external ticketing system.
 
@@ -14,7 +14,7 @@ SchemaBridge separates those responsibilities into durable steps. Each important
 
 ## 3. Goals
 
-- Discover PostgreSQL source and Snowflake target metadata through named profiles.
+- Discover PostgreSQL or MySQL source metadata and Snowflake target metadata through named profiles.
 - Convert vendor metadata into canonical immutable models.
 - Produce deterministic and explainable one-to-one mapping suggestions.
 - Require explicit human approval before write-capable execution.
@@ -39,24 +39,24 @@ The current repository does not provide:
 
 The durable workflow is designed around:
 
-- **source system:** PostgreSQL, for schema discovery and source-side validation;
+- **source system:** PostgreSQL or MySQL, for schema discovery, bounded extraction, and source-side validation;
 - **target system:** Snowflake, for target discovery, approved transformation execution, and target-side validation;
 - **control plane:** a separate PostgreSQL database that stores workflow records.
 
-The connector factory also contains demo, MySQL, and SQL Server implementations. They are reusable lower-level connectors, but the durable execution path explicitly requires a Snowflake target.
+The connector factory also contains demo and SQL Server implementations. SQL Server remains a reusable lower-level connector, while MySQL now implements the discovery, batch-reader, and validation capabilities required on the durable source side. The durable execution path still explicitly requires a Snowflake target.
 
-After approval, SchemaBridge creates a managed transient Snowflake staging table and copies PostgreSQL rows into it in bounded batches. Transformation execution produces a Snowflake `INSERT ... SELECT` whose source is derived from the persisted staging-load evidence rather than supplied by the client.
+After approval, SchemaBridge creates a managed transient Snowflake staging table and copies PostgreSQL or MySQL rows into it in bounded batches. Transformation execution produces a Snowflake `INSERT ... SELECT` whose source is derived from the persisted staging-load evidence rather than supplied by the client.
 
 ## 6. Source and target systems
 
 Workflows persist profile identifiers, not credentials. At runtime, `ProfileRegistry` parses `DB_PROFILES_JSON`, and `DatabaseService` resolves the selected immutable profile through `ConnectorFactory`.
 
-The source PostgreSQL profile may be read-only. The Snowflake target profile must match the workflow target database and must set `write_enabled=true` before migration execution. Validation remains read-only and does not require write authorization.
+The PostgreSQL or MySQL source profile may be read-only. The Snowflake target profile must match the workflow target database and must set `write_enabled=true` before migration execution. Validation remains read-only and selects generated SQL from connector-advertised dialect capabilities.
 
 ## 7. End-to-end workflow
 
 1. Create a durable workflow in `DRAFT`.
-2. Discover the source PostgreSQL relation.
+2. Discover the source PostgreSQL or MySQL relation.
 3. Discover the target Snowflake relation.
 4. Persist both discovery artifacts and enter `DISCOVERED`.
 5. Generate a deterministic mapping proposal.

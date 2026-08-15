@@ -31,6 +31,7 @@ from schemabridge.models.discovery import (
     TableMetadata,
 )
 from schemabridge.models.transport import DataBatch, TransportRelation
+from schemabridge.models.mapping import SqlDialect
 from schemabridge.normalizers._discovery_common import (
     _preference_key,
     foreign_key_coverage,
@@ -71,6 +72,11 @@ class PostgreSQLConnector(DatabaseConnector):
     """Implement bounded PostgreSQL operations through lazily imported psycopg."""
 
     profile_db_type = "postgresql"
+
+    def validation_sql_dialect(self) -> SqlDialect:
+        """Advertise generated PostgreSQL validation-query support."""
+
+        return SqlDialect.POSTGRESQL
 
     def _driver(self):
         """Load the optional PostgreSQL driver only when selected."""

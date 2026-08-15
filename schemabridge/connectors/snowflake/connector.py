@@ -36,6 +36,7 @@ from schemabridge.models.discovery import (
     TableMetadata,
 )
 from schemabridge.models.metadata import CanonicalType
+from schemabridge.models.mapping import SqlDialect
 from schemabridge.models.transport import (
     BatchWriteResult,
     DataBatch,
@@ -85,6 +86,11 @@ class SnowflakeConnector(DatabaseConnector):
     """Implement bounded Snowflake operations through the lazily loaded driver."""
 
     profile_db_type = "snowflake"
+
+    def validation_sql_dialect(self) -> SqlDialect:
+        """Advertise generated Snowflake validation-query support."""
+
+        return SqlDialect.SNOWFLAKE
 
     def _driver(self):
         """Load the optional Snowflake driver only when selected."""

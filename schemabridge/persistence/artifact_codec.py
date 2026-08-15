@@ -379,7 +379,7 @@ def _validation_sql(value: object) -> GeneratedValidationSql:
 def validation_preview_from_artifact(
     artifact: WorkflowArtifact,
 ) -> tuple[GeneratedValidationSql, GeneratedValidationSql]:
-    """Decode the ordered PostgreSQL/Snowflake validation statement pair."""
+    """Decode the ordered source/target validation statement pair."""
 
     if artifact.artifact_type is not WorkflowArtifactType.VALIDATION_PREVIEW:
         raise WorkflowArtifactValidationError()

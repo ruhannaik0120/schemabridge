@@ -1,8 +1,8 @@
 # SchemaBridge
 
-SchemaBridge is a governed PostgreSQL-to-Snowflake migration backend. It discovers schemas, proposes deterministic column mappings, requires human approval, compiles Snowflake SQL, records execution attempts, validates source and target aggregates, and preserves an auditable workflow history.
+SchemaBridge is a governed PostgreSQL/MySQL-to-Snowflake migration backend. It discovers schemas, proposes deterministic column mappings, requires human approval, compiles Snowflake SQL, records execution attempts, validates source and target aggregates, and preserves an auditable workflow history.
 
-It is a synchronous, governed batch-migration backend rather than a general streaming platform. After mapping approval, SchemaBridge creates a managed transient Snowflake staging table, copies PostgreSQL rows into it in bounded batches, and generates the final `INSERT ... SELECT` from that exact table.
+It is a synchronous, governed batch-migration backend rather than a general streaming platform. After mapping approval, SchemaBridge creates a managed transient Snowflake staging table, copies source rows into it in bounded batches, and generates the final `INSERT ... SELECT` from that exact table.
 
 ## Documentation
 
@@ -34,7 +34,7 @@ The source and target are data-plane systems. The separate control-plane Postgre
 2. Discover canonical PostgreSQL and Snowflake metadata.
 3. Generate deterministic, evidence-backed mapping suggestions.
 4. Record human approval or overrides as a new immutable artifact.
-5. Claim a transport attempt, create managed Snowflake staging, and load PostgreSQL rows in batches.
+5. Claim a transport attempt, create managed Snowflake staging, and load PostgreSQL or MySQL rows in batches.
 6. Compile a Snowflake transformation preview from the approved plan and recorded staging evidence.
 7. Recompile, verify, claim, and execute the approved statement.
 8. After a confirmed commit, remove SchemaBridge-managed staging and persist cleanup evidence.
@@ -121,7 +121,7 @@ docs/           Product, architecture, setup, and study guides
 - Validation compares generated aggregates, not every row.
 - Uncertain remote outcomes require manual investigation.
 - The durable workflow has no authentication, background worker, frontend, file ingestion, profiling, or production deployment layer.
-- MySQL and SQL Server exist behind the generic connector factory but are not supported durable migration-execution targets.
+- MySQL is supported as a durable workflow source. SQL Server remains a generic connector only, and Snowflake is still the only supported final execution target.
 - Static packaging and Compose configuration are tested; a running Docker deployment is not claimed as verified here.
 
 For a guided credential-free demonstration, see [LOCAL_WORKFLOW_DEMO.md](docs/LOCAL_WORKFLOW_DEMO.md). For interview preparation, see [INTERVIEW_DEMO.md](docs/INTERVIEW_DEMO.md).

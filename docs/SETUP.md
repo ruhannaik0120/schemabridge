@@ -107,10 +107,11 @@ cp .env.example .env
 
 `DB_PROFILES_JSON` is a JSON object keyed by profile ID. Durable workflows persist these IDs and resolve the full profile only at runtime.
 
-The checked-in example defines three shapes:
+The checked-in example defines four shapes:
 
 - `demo-local`: no network or credentials;
 - `postgres-source`: PostgreSQL account, database, port/TLS options, timeout, and row limit;
+- `mysql-source`: MySQL account, database, port/TLS options, timeout, and row limit;
 - `snowflake-target`: Snowflake account identifier, database, warehouse, schema, role, credentials, timeout, row limit, and `write_enabled`.
 
 Replace every angle-bracket placeholder before using a live profile. Leave the target's `write_enabled` false until a reviewer explicitly authorizes a non-production target for writes.
@@ -234,13 +235,15 @@ The following command requires valid PostgreSQL and Snowflake profiles because i
 
 It still stops before approval and execution.
 
-## Live PostgreSQL and Snowflake profiles
+## Live source and Snowflake profiles
 
-For source discovery and validation:
+For PostgreSQL source discovery, batch reading, and validation:
 
 1. Fill the `postgres-source` profile placeholders in `.env`.
 2. Use a read-only PostgreSQL role with access only to the intended schemas.
 3. Restart the API after changing `DB_PROFILES_JSON`.
+
+For MySQL source discovery, batch reading, and validation, use a `mysql-source` profile with `db_type=mysql`. Its workflow relation uses the MySQL database name for both `catalog_name` and `schema_name`. Use a read-only account with `SELECT` access to the intended tables and read access to the required `INFORMATION_SCHEMA` metadata.
 
 For target discovery and execution:
 

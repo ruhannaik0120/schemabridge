@@ -10,7 +10,7 @@ def _request(approved=True, *, plan=None):
  return MigrationValidationExecutionRequest(source_profile_id='pg',target_profile_id='sf',approved_mapping_plan=plan or _approved(),source_schema='public',source_table='people',target_database='db',target_schema='schema',target_table='people',timeout_seconds=9,explicitly_approved=approved)
 class FakeService:
  def __init__(self,name,metrics,events):self.name=name;self.metrics=metrics;self.events=events;self.calls=[]
- def validation_execution_context(self,timeout):return {'profile_id':self.name,'db_type':'postgresql' if self.name=='pg' else 'snowflake','timeout_seconds':timeout}
+ def validation_execution_context(self,timeout):return {'profile_id':self.name,'db_type':'postgresql' if self.name=='pg' else 'snowflake','validation_dialect':'POSTGRESQL' if self.name=='pg' else 'SNOWFLAKE','timeout_seconds':timeout}
  def execute_validation_query(self,**kwargs):
   self.calls.append(kwargs);self.events.append(self.name)
   return DatabaseExecutionResult(tuple(self.metrics),(tuple(self.metrics.values()),),None)

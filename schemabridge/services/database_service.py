@@ -16,8 +16,10 @@ from typing import Any
 from schemabridge.config import ConfigError
 from schemabridge.connectors.base import DatabaseConnector
 from schemabridge.connectors.factory import ConnectorFactory
+from schemabridge.connectors.validation import ValidationQueryDialectProvider
 from schemabridge.logger import logger
 from schemabridge.models.connection_profile import ConnectionProfile
+from schemabridge.models.mapping import SqlDialect
 from schemabridge.services.profile_registry import ProfileRegistry
 from schemabridge.validation.sql_guard import validate_query
 
@@ -118,9 +120,19 @@ class DatabaseService:
     ) -> dict[str, object]:
         """Return credential-free settings required by read-only validation."""
 
+        if not isinstance(self.connector, ValidationQueryDialectProvider):
+            raise DatabaseAccessError(
+                "The selected connector cannot execute generated validation queries."
+            )
+        dialect = self.connector.validation_sql_dialect()
+        if not isinstance(dialect, SqlDialect):
+            raise DatabaseAccessError(
+                "The selected connector cannot execute generated validation queries."
+            )
         return {
             "profile_id": self.profile.profile_id,
             "db_type": self.profile.db_type,
+            "validation_dialect": dialect.value,
             "timeout_seconds": self._effective_timeout(timeout_seconds),
         }
 

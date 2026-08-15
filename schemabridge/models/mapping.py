@@ -59,6 +59,7 @@ class SqlDialect(str, Enum):
 
     SNOWFLAKE = "SNOWFLAKE"
     POSTGRESQL = "POSTGRESQL"
+    MYSQL = "MYSQL"
 
 
 class TransformationStatementType(str, Enum):

@@ -17,7 +17,7 @@ If you are new to SchemaBridge, read the files in this order.
 12. `schemabridge/connectors/` — concrete PostgreSQL and Snowflake boundaries.
 13. `Dockerfile`, `compose.yaml`, and `scripts/` — packaging and operation.
 
-The durable path discovers and approves a PostgreSQL-to-Snowflake migration, loads PostgreSQL rows into a managed transient Snowflake staging table in bounded batches, and compiles the final `INSERT ... SELECT` from the stored staging evidence.
+The durable path discovers and approves a PostgreSQL/MySQL-to-Snowflake migration, loads source rows into a managed transient Snowflake staging table in bounded batches, and compiles the final `INSERT ... SELECT` from the stored staging evidence.
 
 ## A useful mental model
 
@@ -31,7 +31,7 @@ HTTP request
        and workflow repository (local control plane)
 ```
 
-The data plane contains the source PostgreSQL and target Snowflake databases. The control plane is a separate PostgreSQL database that records decisions and history; it does not carry migrated business rows.
+The data plane contains a PostgreSQL or MySQL source and a Snowflake target. The control plane is a separate PostgreSQL database that records decisions and history; it does not carry migrated business rows.
 
 ## Where does the application start?
 

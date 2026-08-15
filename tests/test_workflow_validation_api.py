@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from schemabridge.api.dependencies import get_migration_execution_service, get_validation_execution_service
 from schemabridge.models.validation import MigrationValidationExecutionReport, MigrationValidationStatus, ValidationExecutionStatus
+from schemabridge.models.mapping import SqlDialect
 from schemabridge.persistence.errors import WorkflowPersistenceError
 from schemabridge.services.migration_execution import TargetExecutionDisposition, TargetExecutionResult
 from schemabridge.services.reconciliation import reconcile_validation_results
@@ -31,6 +32,9 @@ class FakeValidationExecutor:
         self.requests = []
         self.plans = []
 
+    def resolve_dialects(self, **_kwargs):
+        return SqlDialect.POSTGRESQL, SqlDialect.SNOWFLAKE
+
     def run(self, request):
         self.invocations += 1
         self.requests.append(request)
@@ -41,6 +45,8 @@ class FakeValidationExecutor:
             target_database=request.target_database,
             target_schema=request.target_schema,
             target_table=request.target_table,
+            source_dialect=SqlDialect.POSTGRESQL,
+            target_dialect=SqlDialect.SNOWFLAKE,
         )
         self.plans.append(plan)
         if self.started is not None:

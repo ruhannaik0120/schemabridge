@@ -393,6 +393,15 @@ def test_complete_http_workflow_executes_ordered_profile_bound_validation(monkey
         def __init__(self, profile):
             self.profile = profile
 
+        def validation_execution_context(self, timeout):
+            return {
+                "profile_id": self.profile,
+                "validation_dialect": (
+                    "POSTGRESQL" if self.profile == "pg-source" else "SNOWFLAKE"
+                ),
+                "timeout_seconds": timeout,
+            }
+
         def execute_validation_query(self, **kwargs):
             calls.append((self.profile, deepcopy(kwargs)))
             return DatabaseExecutionResult(tuple(results), (tuple(results.values()),), None)
@@ -444,14 +453,24 @@ def test_execution_returns_validation_outcomes_as_success(monkeypatch, target_ch
                 target_metrics[key] = value
 
     class DatabaseService:
-        def __init__(self, metrics):
+        def __init__(self, profile, metrics):
+            self.profile = profile
             self.metrics = metrics
+
+        def validation_execution_context(self, timeout):
+            return {
+                "profile_id": self.profile,
+                "validation_dialect": (
+                    "POSTGRESQL" if self.profile == "pg" else "SNOWFLAKE"
+                ),
+                "timeout_seconds": timeout,
+            }
 
         def execute_validation_query(self, **_kwargs):
             return DatabaseExecutionResult(tuple(self.metrics), (tuple(self.metrics.values()),), None)
 
     import schemabridge.services.validation_execution as execution_module
-    monkeypatch.setattr(execution_module, "get_database_service", lambda profile: DatabaseService(source_metrics if profile == "pg" else target_metrics))
+    monkeypatch.setattr(execution_module, "get_database_service", lambda profile: DatabaseService(profile, source_metrics if profile == "pg" else target_metrics))
     with TestClient(create_app()) as client:
         approved, _ = _get_approved(client, source, target)
         response = client.post(f"{BASE}/validations/execute", json={
@@ -467,11 +486,23 @@ def test_malformed_execution_result_is_redacted_502(monkeypatch) -> None:
     source, target = _workflow_tables()
 
     class DatabaseService:
+        def __init__(self, profile):
+            self.profile = profile
+
+        def validation_execution_context(self, timeout):
+            return {
+                "profile_id": self.profile,
+                "validation_dialect": (
+                    "POSTGRESQL" if self.profile.startswith("pg") else "SNOWFLAKE"
+                ),
+                "timeout_seconds": timeout,
+            }
+
         def execute_validation_query(self, **_kwargs):
             return DatabaseExecutionResult(("row_count",), ((1,), (2,)), None)
 
     import schemabridge.services.validation_execution as execution_module
-    monkeypatch.setattr(execution_module, "get_database_service", lambda _profile: DatabaseService())
+    monkeypatch.setattr(execution_module, "get_database_service", lambda profile: DatabaseService(profile))
     with TestClient(create_app()) as client:
         approved, _ = _get_approved(client, source, target)
         response = client.post(f"{BASE}/validations/execute", json={

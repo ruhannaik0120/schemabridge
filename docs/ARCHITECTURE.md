@@ -24,7 +24,9 @@ ProfileRegistry
     v
 ConnectorFactory
     |
-    +--> PostgreSQL connector (source discovery and validation)
+    +--> PostgreSQL connector (source discovery, batch reading, validation)
+    |
+    +--> MySQL connector (source discovery, batch reading, validation)
     |
     +--> Snowflake connector (target discovery, execution, validation)
 ```
@@ -188,7 +190,7 @@ This ordering prevents a stale preview, altered SQL, duplicate caller, or disabl
 
 `WorkflowValidationOrchestrator.validate` requires successful committed execution evidence and the approved mapping. It recompiles a safe validation plan, claims a validation run, marks it running, and delegates to `MigrationValidationExecutionService`.
 
-The execution service resolves the source and target profiles independently, requires PostgreSQL on the source side and Snowflake on the target side, executes one read-only aggregate query per side, and rejects malformed multi-row results.
+The execution service resolves the source and target profiles independently and asks each connector for its validation SQL dialect capability. PostgreSQL and MySQL are implemented source dialects; Snowflake is the implemented target dialect. It executes one read-only aggregate query per side and rejects malformed multi-row results.
 
 ### 9. Reconciliation
 
@@ -252,4 +254,4 @@ This cannot provide a distributed transaction. It provides an explicit record of
 
 New generic connectors implement `DatabaseConnector`, export `Connector`, and register a module path in `ConnectorFactory`. To participate in batch transport, a connector independently implements `BatchSourceReader`, `StagingTableWriter`, or both. The source and staging roles are selected by each workflow's profile IDs and checked by capability; they are not inferred from `db_type` or the connector class name.
 
-Transport neutrality does not yet make the complete migration workflow vendor-neutral. Adding a new final target also requires a target-specific transformation compiler, execution adapter, SQL safety policy, and validation implementation. The current versions of those later stages still support PostgreSQL-to-Snowflake.
+Transport and validation select roles by connector capability. PostgreSQL and MySQL can currently fill the durable source role, while Snowflake remains the only final target. Adding a new final target still requires a target-specific transformation compiler, execution adapter, SQL safety policy, staging writer, and validation implementation.

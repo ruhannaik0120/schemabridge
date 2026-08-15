@@ -32,12 +32,48 @@ class MalformedValidationExecutionResultError(ValueError):
 
 
 class MigrationValidationExecutionService:
-    """Run a generated PostgreSQL/Snowflake validation pair synchronously."""
+    """Run a capability-selected source/target validation pair synchronously."""
 
     def __init__(self, database_service_factory=None):
         """Accept an optional profile resolver for dependency injection and tests."""
 
         self.database_service_factory = database_service_factory
+
+    def resolve_dialects(
+        self,
+        *,
+        source_profile_id: str,
+        target_profile_id: str,
+        timeout_seconds: int | None,
+    ) -> tuple[SqlDialect, SqlDialect]:
+        """Resolve validation SQL dialects from connector capabilities."""
+
+        resolver = self.database_service_factory or get_database_service
+
+        def resolve(profile_id: str, side: str) -> SqlDialect:
+            try:
+                service = resolver(profile_id)
+                context = getattr(service, "validation_execution_context", None)
+                values = context(timeout_seconds) if callable(context) else None
+            except Exception:
+                raise ValidationExecutionError(
+                    f"Validation {side} profile unavailable."
+                ) from None
+            try:
+                if (
+                    not isinstance(values, dict)
+                    or values.get("profile_id") != profile_id
+                ):
+                    raise ValueError
+                return SqlDialect(str(values["validation_dialect"]).upper())
+            except (KeyError, ValueError, TypeError):
+                raise ValidationExecutionError(
+                    f"Validation {side} connector is unsupported."
+                ) from None
+
+        return resolve(source_profile_id, "source"), resolve(
+            target_profile_id, "target"
+        )
 
     def run(
         self,
@@ -58,17 +94,73 @@ class MigrationValidationExecutionService:
             or request.explicitly_approved is not True
         ):
             raise ValidationApprovalRequiredError("Validation approval is required.")
-        source_sql, target_sql = compile_validation_sql(
-            request.approved_mapping_plan,
-            source_schema=request.source_schema,
-            source_table=request.source_table,
-            target_database=request.target_database,
-            target_schema=request.target_schema,
-            target_table=request.target_table,
-        )
+        resolver = self.database_service_factory or get_database_service
+        # Resolve both capabilities before compilation. The selected workflow
+        # roles, not vendor names, decide which side is source and target.
+        try:
+            source = resolver(request.source_profile_id)
+            context = getattr(source, "validation_execution_context", None)
+            source_context = (
+                context(request.timeout_seconds) if callable(context) else None
+            )
+        except Exception:
+            raise ValidationExecutionError(
+                "Validation source profile unavailable."
+            ) from None
+        try:
+            if (
+                not isinstance(source_context, dict)
+                or source_context.get("profile_id") != request.source_profile_id
+            ):
+                raise ValueError
+            source_dialect = SqlDialect(
+                str(source_context["validation_dialect"]).upper()
+            )
+        except (KeyError, ValueError, TypeError):
+            raise ValidationExecutionError(
+                "Validation source connector is unsupported."
+            ) from None
+
+        try:
+            target = resolver(request.target_profile_id)
+            context = getattr(target, "validation_execution_context", None)
+            target_context = (
+                context(request.timeout_seconds) if callable(context) else None
+            )
+        except Exception:
+            raise ValidationExecutionError(
+                "Validation target profile unavailable."
+            ) from None
+        try:
+            if (
+                not isinstance(target_context, dict)
+                or target_context.get("profile_id") != request.target_profile_id
+            ):
+                raise ValueError
+            target_dialect = SqlDialect(
+                str(target_context["validation_dialect"]).upper()
+            )
+        except (KeyError, ValueError, TypeError):
+            raise ValidationExecutionError(
+                "Validation target connector is unsupported."
+            ) from None
+
+        try:
+            source_sql, target_sql = compile_validation_sql(
+                request.approved_mapping_plan,
+                source_schema=request.source_schema,
+                source_table=request.source_table,
+                target_database=request.target_database,
+                target_schema=request.target_schema,
+                target_table=request.target_table,
+                source_dialect=source_dialect,
+                target_dialect=target_dialect,
+            )
+        except Exception:
+            raise ValidationExecutionError("Validation compilation failed.") from None
         if (
-            source_sql.dialect is not SqlDialect.POSTGRESQL
-            or target_sql.dialect is not SqlDialect.SNOWFLAKE
+            source_sql.dialect is not source_dialect
+            or target_sql.dialect is not target_dialect
         ):
             raise ValidationExecutionError("Validation compilation failed.")
         forbidden = (
@@ -90,27 +182,6 @@ class MigrationValidationExecutionService:
             ):
                 raise ValidationExecutionError("Validation compilation failed.")
 
-        resolver = self.database_service_factory or get_database_service
-        # Resolve and execute each side separately because the databases have
-        # different profiles, dialects, permissions, and failure domains.
-        try:
-            source = resolver(request.source_profile_id)
-            context = getattr(source, "validation_execution_context", None)
-            source_context = (
-                context(request.timeout_seconds) if callable(context) else None
-            )
-        except Exception:
-            raise ValidationExecutionError(
-                "Validation source profile unavailable."
-            ) from None
-        if source_context is not None and (
-            source_context.get("profile_id") != request.source_profile_id
-            or str(source_context.get("db_type", "")).casefold()
-            not in {"postgres", "postgresql"}
-        ):
-            raise ValidationExecutionError(
-                "Validation source connector is unsupported."
-            )
         try:
             source_result = source.execute_validation_query(
                 sql=source_sql.sql,
@@ -121,24 +192,6 @@ class MigrationValidationExecutionService:
             raise ValidationExecutionError(
                 "Validation source execution failed."
             ) from None
-
-        try:
-            target = resolver(request.target_profile_id)
-            context = getattr(target, "validation_execution_context", None)
-            target_context = (
-                context(request.timeout_seconds) if callable(context) else None
-            )
-        except Exception:
-            raise ValidationExecutionError(
-                "Validation target profile unavailable."
-            ) from None
-        if target_context is not None and (
-            target_context.get("profile_id") != request.target_profile_id
-            or str(target_context.get("db_type", "")).casefold() != "snowflake"
-        ):
-            raise ValidationExecutionError(
-                "Validation target connector is unsupported."
-            )
         try:
             target_result = target.execute_validation_query(
                 sql=target_sql.sql,

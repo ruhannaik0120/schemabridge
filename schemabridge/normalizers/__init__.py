@@ -1,5 +1,6 @@
 """Vendor-specific normalization into SchemaBridge metadata models."""
 
+from schemabridge.normalizers.mysql import normalize_mysql_column
 from schemabridge.normalizers.postgresql import normalize_postgresql_column
 from schemabridge.normalizers.postgresql_discovery import (
     normalize_postgresql_check_constraint,
@@ -20,6 +21,7 @@ from schemabridge.normalizers.snowflake_discovery import (
 )
 
 __all__ = [
+    "normalize_mysql_column",
     "normalize_postgresql_check_constraint",
     "normalize_postgresql_column",
     "normalize_postgresql_foreign_key",

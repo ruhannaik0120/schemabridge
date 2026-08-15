@@ -110,9 +110,11 @@ class WorkflowValidationOrchestrator:
 
     @staticmethod
     def _safe_plan(plan: tuple[GeneratedValidationSql, GeneratedValidationSql]) -> None:
-        """Require an ordered PostgreSQL/Snowflake pair of read-only statements."""
+        """Require an ordered capability-selected pair of read-only statements."""
 
-        if len(plan) != 2 or plan[0].dialect is not SqlDialect.POSTGRESQL or plan[1].dialect is not SqlDialect.SNOWFLAKE:
+        if len(plan) != 2 or not all(
+            isinstance(item.dialect, SqlDialect) for item in plan
+        ):
             raise WorkflowUnsafeValidationQueryError()
         forbidden = (" INSERT ", " UPDATE ", " DELETE ", " MERGE ", " CREATE ", " ALTER ", " DROP ", " BEGIN ", " COMMIT ", " ROLLBACK ")
         for generated in plan:
@@ -270,9 +272,16 @@ class WorkflowValidationOrchestrator:
             approved = approved_mapping_plan_from_artifact(approved_artifact)
             if not approved.approved_mappings or any(item.status is MappingApprovalStatus.PENDING for item in approved.approvals):
                 raise WorkflowValidationNotReadyError()
-            if workflow.source_relation.system.casefold() not in {"postgresql", "postgres"} or workflow.target_relation.system.casefold() != "snowflake" or workflow.target_relation.catalog_name is None:
+            if workflow.target_relation.catalog_name is None:
                 raise WorkflowValidationNotReadyError()
             try:
+                source_dialect, target_dialect = (
+                    self.validation_execution_service.resolve_dialects(
+                        source_profile_id=source_profile_id,
+                        target_profile_id=target_profile_id,
+                        timeout_seconds=timeout_seconds,
+                    )
+                )
                 plan = self.validation_compiler(
                     approved,
                     source_schema=workflow.source_relation.schema_name,
@@ -280,9 +289,16 @@ class WorkflowValidationOrchestrator:
                     target_database=workflow.target_relation.catalog_name,
                     target_schema=workflow.target_relation.schema_name,
                     target_table=workflow.target_relation.object_name,
+                    source_dialect=source_dialect,
+                    target_dialect=target_dialect,
                 )
             except Exception:
                 raise WorkflowUnsafeValidationQueryError() from None
+            if (
+                plan[0].dialect is not source_dialect
+                or plan[1].dialect is not target_dialect
+            ):
+                raise WorkflowUnsafeValidationQueryError()
             self._safe_plan(plan)
             # The fingerprint binds the run to execution, approval, generated
             # checks, and profiles without persisting credentials or raw SQL in
