@@ -317,9 +317,13 @@ class WorkflowPlanningOrchestrator:
             raise WorkflowMappingApprovalRequiredError() from None
         # Preview and execution require a complete human decision boundary;
         # pending-only or empty approval artifacts are not sufficient.
-        if any(
-            item.status is MappingApprovalStatus.PENDING for item in approved.approvals
-        ) or not approved.approved_mappings:
+        if (
+            any(item.status is MappingApprovalStatus.PENDING for item in approved.approvals)
+            or not approved.approved_mappings
+            or any(
+                item.transformation is None for item in approved.approved_mappings
+            )
+        ):
             raise WorkflowMappingApprovalRequiredError()
         digest = request_hash(
             "WORKFLOW_APPROVE_MAPPING",

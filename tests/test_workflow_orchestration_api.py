@@ -253,6 +253,42 @@ def test_approval_replay_survives_later_artifact_versions_without_duplication() 
     assert len(artifacts) == 5
 
 
+def test_approval_without_transformation_is_rejected_without_durable_changes() -> None:
+    repository = InMemoryWorkflowRepository()
+    with TestClient(_application(repository)) as client:
+        created = _create(client)
+        _, target = _discover_pair(client, created)
+        workflow_id = created["workflow_id"]
+        proposed = _mapping(client, workflow_id, target["workflow"]["version"])
+        incomplete_decisions = _decisions()
+        incomplete_decisions[2] = {
+            key: value
+            for key, value in incomplete_decisions[2].items()
+            if key != "transformation"
+        }
+
+        rejected = _mutate(
+            client,
+            f"{BASE}/{workflow_id}/mapping-approvals",
+            {
+                "expected_version": proposed["workflow"]["version"],
+                "mapping_artifact_version": proposed["artifact"]["artifact_version"],
+                "decisions": incomplete_decisions,
+            },
+            "incomplete-approval",
+        )
+        current = client.get(f"{BASE}/{workflow_id}").json()
+        artifacts = client.get(f"{BASE}/{workflow_id}/artifacts").json()["items"]
+
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "MAPPING_APPROVAL_REQUIRED"
+    assert current["status"] == "MAPPING_PROPOSED"
+    assert current["version"] == proposed["workflow"]["version"]
+    assert [item["artifact_type"] for item in artifacts] == [
+        "SOURCE_DISCOVERY", "TARGET_DISCOVERY", "MAPPING_PLAN"
+    ]
+
+
 def test_approval_rejects_missing_and_stale_mapping_references_and_preview_requires_approval() -> None:
     repository = InMemoryWorkflowRepository()
     source_table, _ = _workflow_tables()
