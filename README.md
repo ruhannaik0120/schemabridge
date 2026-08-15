@@ -116,7 +116,7 @@ docs/           Product, architecture, setup, and study guides
 
 ## Current limitations
 
-- Batch transport currently supports PostgreSQL sources and Snowflake staging targets only.
+- Batch transport selects source-reader and staging-writer roles by connector capability, not by vendor name. PostgreSQL reading and Snowflake staging are the only concrete transport implementations currently supplied.
 - The transport is synchronous and inserts batches through the connector; it is not a high-volume bulk-file or streaming engine.
 - Validation compares generated aggregates, not every row.
 - Uncertain remote outcomes require manual investigation.

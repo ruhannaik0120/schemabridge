@@ -158,7 +158,7 @@ The transport orchestrator creates a uniquely named transient staging table, cop
 
 ### 6. Managed staging transport
 
-`WorkflowTransportOrchestrator.run` verifies the current discovery and approval artifacts, resolves the exact profiles, and stores a unique claim before remote work. It creates and loads transient Snowflake staging in bounded batches. A proved cleanup returns the workflow to `MAPPING_APPROVED`; an uncertain outcome enters `STAGING_RECOVERY_REQUIRED` and is not retried automatically.
+`WorkflowTransportOrchestrator.run` verifies the current discovery and approval artifacts, resolves the exact profiles, and stores a unique claim before remote work. The workflow-selected source profile must provide the `BatchSourceReader` capability, while the workflow-selected staging profile must provide `StagingTableWriter` and opt in to writes. Transport assigns no permanent source or target role from a vendor name. The current concrete implementations read PostgreSQL and write transient Snowflake staging, but another connector can fill either role by implementing the relevant capability. A proved cleanup returns the workflow to `MAPPING_APPROVED`; an uncertain outcome enters `STAGING_RECOVERY_REQUIRED` and is not retried automatically.
 
 ### 7. Transformation preview
 
@@ -250,4 +250,6 @@ This cannot provide a distributed transaction. It provides an explicit record of
 
 ## Extension boundaries
 
-New generic connectors implement `DatabaseConnector`, export `Connector`, and register a module path in `ConnectorFactory`. Extending the durable migration workflow requires additional policy work beyond registering a connector, because execution currently enforces a PostgreSQL-source/Snowflake-target contract.
+New generic connectors implement `DatabaseConnector`, export `Connector`, and register a module path in `ConnectorFactory`. To participate in batch transport, a connector independently implements `BatchSourceReader`, `StagingTableWriter`, or both. The source and staging roles are selected by each workflow's profile IDs and checked by capability; they are not inferred from `db_type` or the connector class name.
+
+Transport neutrality does not yet make the complete migration workflow vendor-neutral. Adding a new final target also requires a target-specific transformation compiler, execution adapter, SQL safety policy, and validation implementation. The current versions of those later stages still support PostgreSQL-to-Snowflake.

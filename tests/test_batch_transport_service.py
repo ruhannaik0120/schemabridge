@@ -310,11 +310,21 @@ def test_staging_name_is_deterministic_for_safe_recovery() -> None:
     assert first == second
 
 
-def _profile_service(profile_id, connector, *, write_enabled, max_rows, timeout):
+def _profile_service(
+    profile_id,
+    connector,
+    *,
+    database,
+    db_type,
+    write_enabled,
+    max_rows,
+    timeout,
+):
     return SimpleNamespace(
         profile=SimpleNamespace(
             profile_id=profile_id,
-            database="SCHEMABRIDGE_LAB" if write_enabled else "source_db",
+            database=database,
+            db_type=db_type,
             write_enabled=write_enabled,
             max_rows=max_rows,
             timeout_seconds=timeout,
@@ -328,10 +338,22 @@ def test_profile_bound_prepare_requires_permissions_and_clamps_limits() -> None:
     writer = Writer()
     services = {
         "source": _profile_service(
-            "source", reader, write_enabled=False, max_rows=500, timeout=30
+            "source",
+            reader,
+            database="source_db",
+            db_type="future_database",
+            write_enabled=False,
+            max_rows=500,
+            timeout=30,
         ),
         "target": _profile_service(
-            "target", writer, write_enabled=True, max_rows=200, timeout=20
+            "target",
+            writer,
+            database="SCHEMABRIDGE_LAB",
+            db_type="future_database",
+            write_enabled=True,
+            max_rows=200,
+            timeout=20,
         ),
     }
 
@@ -345,15 +367,67 @@ def test_profile_bound_prepare_requires_permissions_and_clamps_limits() -> None:
 
     assert prepared.batch_size == 200
     assert prepared.timeout_seconds == 20
+    assert prepared.source_reader is reader
+    assert prepared.staging_writer is writer
+
+
+def test_profile_bound_prepare_assigns_roles_by_capability_not_vendor_name() -> None:
+    """The workflow chooses roles; connector names and db_type do not."""
+
+    reader = Reader(())
+    writer = Writer()
+    services = {
+        "chosen-reader": _profile_service(
+            "chosen-reader",
+            reader,
+            database="operational_data",
+            db_type="snowflake",
+            write_enabled=False,
+            max_rows=500,
+            timeout=30,
+        ),
+        "chosen-writer": _profile_service(
+            "chosen-writer",
+            writer,
+            database="landing_data",
+            db_type="postgresql",
+            write_enabled=True,
+            max_rows=500,
+            timeout=30,
+        ),
+    }
+
+    prepared = ProfileBoundBatchTransportService(services.__getitem__).prepare(
+        source_profile_id="chosen-reader",
+        target_profile_id="chosen-writer",
+        target_database="landing_data",
+        batch_size=100,
+        timeout_seconds=10,
+    )
+
+    assert prepared.source_reader is reader
+    assert prepared.staging_writer is writer
 
 
 def test_profile_bound_prepare_rejects_read_only_target() -> None:
     services = {
         "source": _profile_service(
-            "source", Reader(()), write_enabled=False, max_rows=500, timeout=30
+            "source",
+            Reader(()),
+            database="source_db",
+            db_type="future_database",
+            write_enabled=False,
+            max_rows=500,
+            timeout=30,
         ),
         "target": _profile_service(
-            "target", Writer(), write_enabled=False, max_rows=500, timeout=30
+            "target",
+            Writer(),
+            database="SCHEMABRIDGE_LAB",
+            db_type="future_database",
+            write_enabled=False,
+            max_rows=500,
+            timeout=30,
         ),
     }
 
@@ -433,7 +507,13 @@ def test_cleanup_accepts_only_exact_managed_table_and_write_profile() -> None:
     writer = Writer()
     services = {
         "target": _profile_service(
-            "target", writer, write_enabled=True, max_rows=200, timeout=20
+            "target",
+            writer,
+            database="SCHEMABRIDGE_LAB",
+            db_type="future_database",
+            write_enabled=True,
+            max_rows=200,
+            timeout=20,
         )
     }
     service = ProfileBoundBatchTransportService(services.__getitem__)

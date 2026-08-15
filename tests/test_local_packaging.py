@@ -69,7 +69,7 @@ def test_recruiter_and_demo_documentation_match_implemented_scope() -> None:
         "VALIDATION_REVIEW_REQUIRED",
         "Docker Compose",
         "Swagger",
-        "Batch transport currently supports PostgreSQL sources",
+        "Batch transport selects source-reader and staging-writer roles by connector capability",
     ):
         assert term in readme
     assert "Five-to-seven minute sequence" in interview

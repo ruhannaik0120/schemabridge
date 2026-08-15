@@ -346,9 +346,9 @@ class ProfileBoundBatchTransportService:
                 result=result,
             )
         except Exception:
-            # A failed remote call does not prove whether Snowflake accepted a
-            # batch. A successful DROP proves the managed staging table is gone,
-            # making a later deliberate retry safe.
+            # A failed remote call does not prove whether the staging system
+            # accepted a batch. A successful DROP proves the managed staging
+            # table is gone, making a later deliberate retry safe.
             try:
                 prepared.staging_writer.drop_staging_table(
                     relation=staging_relation,
