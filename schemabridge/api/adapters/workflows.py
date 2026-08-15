@@ -9,6 +9,7 @@ from schemabridge.models.workflow_validation import WorkflowValidationRun
 from schemabridge.models.workflow_transport import (
     WorkflowTransportAttempt,
     WorkflowTransportEvidence,
+    WorkflowStagingCleanupEvidence,
 )
 from schemabridge.models.mapping import GeneratedTransformationSql
 from schemabridge.models.validation import (
@@ -45,6 +46,7 @@ from ..schemas.workflows import (
     TransportRelationSchema,
     WorkflowTransportAttemptSchema,
     WorkflowTransportEvidenceSchema,
+    WorkflowStagingCleanupEvidenceSchema,
 )
 
 
@@ -182,6 +184,14 @@ def transport_evidence_to_api(
     data["source_relation"] = _transport_relation_to_api(value.source_relation)
     data["staging_relation"] = _transport_relation_to_api(value.staging_relation)
     return WorkflowTransportEvidenceSchema(**data)
+
+
+def staging_cleanup_evidence_to_api(
+    value: WorkflowStagingCleanupEvidence,
+) -> WorkflowStagingCleanupEvidenceSchema:
+    data = {name: getattr(value, name) for name in value.__dataclass_fields__}
+    data["staging_relation"] = _transport_relation_to_api(value.staging_relation)
+    return WorkflowStagingCleanupEvidenceSchema(**data)
 
 
 def validation_run_to_api(value: WorkflowValidationRun) -> WorkflowValidationRunSchema:

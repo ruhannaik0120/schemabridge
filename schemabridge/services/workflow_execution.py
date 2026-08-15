@@ -31,6 +31,8 @@ from schemabridge.persistence.artifact_codec import (
     approved_mapping_plan_from_artifact,
     execution_evidence_from_artifact,
     transformation_sql_from_artifact,
+    workflow_staging_cleanup_evidence_from_artifact,
+    workflow_transport_evidence_from_artifact,
 )
 from schemabridge.persistence.errors import (
     WorkflowExecutionAlreadyInProgressError,
@@ -41,6 +43,7 @@ from schemabridge.persistence.errors import (
     WorkflowRequiredArtifactError,
     WorkflowStaleArtifactReferenceError,
     WorkflowUnsafeGeneratedStatementError,
+    WorkflowStagingCleanupError,
 )
 from schemabridge.persistence.serialization import request_hash
 from schemabridge.services.migration_execution import (
@@ -48,6 +51,7 @@ from schemabridge.services.migration_execution import (
     TargetExecutionResult,
 )
 from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.models.workflow_transport import WorkflowStagingCleanupEvidence
 
 
 def _now() -> datetime:
@@ -64,6 +68,8 @@ class WorkflowExecutionResult:
     attempt: MigrationExecutionAttempt
     artifact: WorkflowArtifact
     evidence: MigrationExecutionEvidence
+    cleanup_artifact: WorkflowArtifact | None = None
+    cleanup_evidence: WorkflowStagingCleanupEvidence | None = None
 
 
 class WorkflowExecutionOrchestrator:
@@ -75,6 +81,7 @@ class WorkflowExecutionOrchestrator:
         *,
         transformation_compiler: object,
         execution_service: object,
+        staging_cleanup_service: object | None = None,
         clock: Callable[[], datetime] = _now,
         uuid_factory: Callable[[], UUID] = uuid4,
     ) -> None:
@@ -83,6 +90,7 @@ class WorkflowExecutionOrchestrator:
         self.persistence = persistence
         self.transformation_compiler = transformation_compiler
         self.execution_service = execution_service
+        self.staging_cleanup_service = staging_cleanup_service
         self.clock = clock
         self.uuid_factory = uuid_factory
 
@@ -155,6 +163,116 @@ class WorkflowExecutionOrchestrator:
                 "target_profile_id": target_profile_id,
                 "timeout_seconds": timeout_seconds,
             },
+        )
+
+    def _cleanup_after_commit(
+        self,
+        result: WorkflowExecutionResult,
+        *,
+        actor_type: AuditActorType,
+        actor_reference: str | None,
+        request_id: str | None,
+    ) -> WorkflowExecutionResult:
+        """Drop managed staging once and persist immutable success evidence."""
+
+        if self.staging_cleanup_service is None:
+            return result
+        workflow_id = result.workflow.workflow_id
+        staging_artifact = self.persistence.get_latest_artifact(
+            workflow_id, WorkflowArtifactType.STAGING_LOAD_EVIDENCE
+        )
+        if staging_artifact is None:
+            # Backward-compatible workflows may use externally managed staging.
+            return result
+        staging = workflow_transport_evidence_from_artifact(staging_artifact)
+        if (
+            staging.approved_mapping_artifact_version
+            != result.evidence.approved_mapping_artifact_version
+            or staging.target_profile_id != result.evidence.target_profile_id
+        ):
+            raise WorkflowStagingCleanupError()
+        cleanup_fingerprint = request_hash(
+            "WORKFLOW_STAGING_CLEANUP_FINGERPRINT",
+            {
+                "workflow_id": workflow_id,
+                "transport_artifact_hash": staging_artifact.payload_sha256,
+                "execution_artifact_hash": result.artifact.payload_sha256,
+                "staging_relation": staging.staging_relation,
+                "target_profile_id": staging.target_profile_id,
+            },
+        )
+        existing_artifact = self.persistence.get_latest_artifact(
+            workflow_id, WorkflowArtifactType.STAGING_CLEANUP_EVIDENCE
+        )
+        if existing_artifact is not None:
+            existing = workflow_staging_cleanup_evidence_from_artifact(
+                existing_artifact
+            )
+            if (
+                existing.execution_attempt_id == result.attempt.attempt_id
+                and existing.transport_attempt_id == staging.attempt_id
+                and existing.cleanup_fingerprint == cleanup_fingerprint
+            ):
+                return WorkflowExecutionResult(
+                    workflow=self.persistence.get_workflow(workflow_id),
+                    attempt=result.attempt,
+                    artifact=result.artifact,
+                    evidence=result.evidence,
+                    cleanup_artifact=existing_artifact,
+                    cleanup_evidence=existing,
+                )
+            raise WorkflowStagingCleanupError()
+        started_at = self.clock()
+        try:
+            self.staging_cleanup_service.cleanup_staging(
+                target_profile_id=staging.target_profile_id,
+                target_database=staging.staging_relation.catalog_name,
+                relation=staging.staging_relation,
+                timeout_seconds=result.attempt.timeout_seconds,
+            )
+        except Exception:
+            # The target commit is already durable. An exact execution replay
+            # retries only this idempotent DROP TABLE IF EXISTS operation.
+            raise WorkflowStagingCleanupError() from None
+        completed_at = self.clock()
+        evidence = WorkflowStagingCleanupEvidence(
+            workflow_id=workflow_id,
+            transport_attempt_id=staging.attempt_id,
+            execution_attempt_id=result.attempt.attempt_id,
+            staging_relation=staging.staging_relation,
+            target_profile_id=staging.target_profile_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_ms=max(
+                0, int((completed_at - started_at).total_seconds() * 1000)
+            ),
+            cleanup_fingerprint=cleanup_fingerprint,
+        )
+        current = self.persistence.get_workflow(workflow_id)
+        updated, artifact = self.persistence.record_staging_cleanup(
+            workflow_id,
+            current.version,
+            evidence,
+            command_hash=request_hash(
+                "WORKFLOW_RECORD_STAGING_CLEANUP",
+                {
+                    "workflow_id": workflow_id,
+                    "expected_version": current.version,
+                    "cleanup_fingerprint": cleanup_fingerprint,
+                },
+            ),
+            idempotency_key=f"cleanup-{result.attempt.attempt_id}",
+            actor_type=actor_type,
+            actor_reference=actor_reference,
+            request_id=request_id,
+        )
+        return WorkflowExecutionResult(
+            workflow=updated,
+            attempt=result.attempt,
+            artifact=result.artifact,
+            evidence=result.evidence,
+            cleanup_artifact=artifact,
+            cleanup_evidence=evidence,
         )
 
     def _complete(
@@ -277,7 +395,13 @@ class WorkflowExecutionOrchestrator:
             MigrationExecutionAttemptStatus.FAILED_ROLLED_BACK,
             MigrationExecutionAttemptStatus.OUTCOME_UNCERTAIN,
         }:
-            return self._terminal_result(workflow_id, replay)
+            terminal = self._terminal_result(workflow_id, replay)
+            return self._cleanup_after_commit(
+                terminal,
+                actor_type=actor_type,
+                actor_reference=actor_reference,
+                request_id=request_id,
+            )
 
         workflow = self.persistence.get_workflow(workflow_id)
         current_command = workflow.version == expected_version
@@ -391,7 +515,13 @@ class WorkflowExecutionOrchestrator:
             MigrationExecutionAttemptStatus.FAILED_ROLLED_BACK,
             MigrationExecutionAttemptStatus.OUTCOME_UNCERTAIN,
         }:
-            return self._terminal_result(workflow_id, attempt)
+            terminal = self._terminal_result(workflow_id, attempt)
+            return self._cleanup_after_commit(
+                terminal,
+                actor_type=actor_type,
+                actor_reference=actor_reference,
+                request_id=request_id,
+            )
         running, acquired = self.persistence.mark_execution_running(
             attempt.attempt_id, self.clock()
         )
@@ -419,7 +549,7 @@ class WorkflowExecutionOrchestrator:
                 )
             raise WorkflowExecutionAlreadyInProgressError()
         result = self.execution_service.execute(target, preview)
-        return self._complete(
+        completed = self._complete(
             claimed_workflow,
             running,
             result=result,
@@ -428,6 +558,12 @@ class WorkflowExecutionOrchestrator:
             actor_reference=actor_reference,
             request_id=request_id,
             idempotency_key=idempotency_key,
+        )
+        return self._cleanup_after_commit(
+            completed,
+            actor_type=actor_type,
+            actor_reference=actor_reference,
+            request_id=request_id,
         )
 
 

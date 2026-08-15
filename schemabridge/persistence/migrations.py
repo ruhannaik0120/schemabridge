@@ -52,7 +52,10 @@ class ControlPlaneMigrationRunner:
             version = int(match.group(1))
             if version < 1:
                 raise WorkflowMigrationError()
-            data = path.read_bytes()
+            # Git may materialize the same SQL with CRLF on Windows and LF on
+            # Linux. Migrations are immutable by SQL content, so canonicalize
+            # line endings before hashing and execution to avoid false drift.
+            data = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
             items.append((version, path.name, data, hashlib.sha256(data).hexdigest()))
         items.sort(key=lambda item: item[0])
         if len({item[0] for item in items}) != len(items):
@@ -91,7 +94,20 @@ class ControlPlaneMigrationRunner:
                         if version in applied:
                             # Applied migration files are immutable.  A checksum
                             # mismatch fails rather than rewriting history.
-                            if applied[version] != checksum:
+                            # Older SchemaBridge versions stored raw checkout
+                            # bytes, so accept only the LF/CRLF encodings of the
+                            # same canonical SQL during the compatibility read.
+                            crlf_checksum = hashlib.sha256(
+                                data.replace(b"\n", b"\r\n")
+                            ).hexdigest()
+                            cr_checksum = hashlib.sha256(
+                                data.replace(b"\n", b"\r")
+                            ).hexdigest()
+                            if applied[version] not in {
+                                checksum,
+                                crlf_checksum,
+                                cr_checksum,
+                            }:
                                 raise WorkflowMigrationError()
                             continue
                         cursor.execute(data.decode("utf-8"))

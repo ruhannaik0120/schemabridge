@@ -161,6 +161,7 @@ def get_workflow_execution_orchestrator(
     persistence=Depends(get_workflow_persistence_service),
     transformation_compiler=Depends(get_transformation_compiler),
     execution_service=Depends(get_migration_execution_service),
+    staging_cleanup_service=Depends(get_batch_transport_service),
 ):
     """Assemble approval-gated execution coordination."""
 
@@ -170,6 +171,7 @@ def get_workflow_execution_orchestrator(
         persistence,
         transformation_compiler=transformation_compiler,
         execution_service=execution_service,
+        staging_cleanup_service=staging_cleanup_service,
     )
 
 

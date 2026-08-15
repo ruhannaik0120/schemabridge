@@ -9,7 +9,10 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
-from schemabridge.api.dependencies import get_batch_transport_service
+from schemabridge.api.dependencies import (
+    get_batch_transport_service,
+    get_migration_execution_service,
+)
 from schemabridge.models.transport import BatchTransportResult, TransportRelation
 from schemabridge.models.workflow import MigrationWorkflowStatus
 from schemabridge.persistence.errors import (
@@ -33,6 +36,7 @@ from tests.test_workflow_orchestration_api import (
     _mutate,
 )
 from tests.test_workflow_persistence_api import BASE
+from tests.test_workflow_execution_api import FakeExecutor
 
 
 ATTEMPT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -44,6 +48,7 @@ class FakeTransport:
         self.raises = raises
         self.prepare_calls = []
         self.run_calls = []
+        self.cleanup_calls = []
 
     def prepare(self, **kwargs):
         self.prepare_calls.append(kwargs)
@@ -85,6 +90,9 @@ class FakeTransport:
                 rows_written=3,
             ),
         )
+
+    def cleanup_staging(self, **kwargs):
+        self.cleanup_calls.append(kwargs)
 
 
 def _approved(repository: InMemoryWorkflowRepository):
@@ -219,6 +227,8 @@ def test_api_loads_managed_staging_and_preview_uses_it_automatically() -> None:
     transport = FakeTransport(BatchTransportDisposition.SUCCEEDED)
     app = _application(repository)
     app.dependency_overrides[get_batch_transport_service] = lambda: transport
+    executor = FakeExecutor()
+    app.dependency_overrides[get_migration_execution_service] = lambda: executor
 
     with TestClient(app) as client:
         created = _create(client)
@@ -267,6 +277,26 @@ def test_api_loads_managed_staging_and_preview_uses_it_automatically() -> None:
             },
             "preview-managed-staging",
         )
+        execution_payload = {
+            "expected_version": preview.json()["workflow"]["version"],
+            "approved_mapping_artifact_version": approved["artifact"]["artifact_version"],
+            "transformation_preview_artifact_version": preview.json()["artifact"]["artifact_version"],
+            "target_profile_id": "sf-target",
+            "timeout_seconds": 20,
+            "actor_type": "SERVICE",
+        }
+        execution = _mutate(
+            client,
+            f"{BASE}/{created['workflow_id']}/execute",
+            execution_payload,
+            "execute-managed-staging",
+        )
+        execution_replay = _mutate(
+            client,
+            f"{BASE}/{created['workflow_id']}/execute",
+            execution_payload,
+            "execute-managed-staging",
+        )
 
     assert loaded.status_code == replay.status_code == 201
     assert replay.json() == loaded.json()
@@ -282,3 +312,11 @@ def test_api_loads_managed_staging_and_preview_uses_it_automatically() -> None:
         staging["schema_name"],
         staging["object_name"],
     ]
+    assert execution.status_code == execution_replay.status_code == 201
+    assert execution_replay.json() == execution.json()
+    assert execution.json()["workflow"]["status"] == "EXECUTED"
+    assert execution.json()["cleanup_artifact"]["artifact_type"] == (
+        "STAGING_CLEANUP_EVIDENCE"
+    )
+    assert execution.json()["cleanup"]["staging_relation"] == staging
+    assert len(transport.cleanup_calls) == 1

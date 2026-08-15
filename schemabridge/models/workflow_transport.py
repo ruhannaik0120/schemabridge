@@ -179,8 +179,45 @@ class WorkflowTransportEvidence:
             raise ValueError("transport_fingerprint is invalid.")
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WorkflowStagingCleanupEvidence:
+    """Prove that one managed staging table was removed after commit."""
+
+    workflow_id: UUID
+    transport_attempt_id: UUID
+    execution_attempt_id: UUID
+    staging_relation: TransportRelation
+    target_profile_id: str
+    started_at: datetime
+    completed_at: datetime
+    duration_ms: int
+    cleanup_fingerprint: str
+
+    def __post_init__(self) -> None:
+        for value, name in (
+            (self.workflow_id, "workflow_id"),
+            (self.transport_attempt_id, "transport_attempt_id"),
+            (self.execution_attempt_id, "execution_attempt_id"),
+        ):
+            if not isinstance(value, UUID):
+                raise TypeError(f"{name} must be a UUID.")
+        if not isinstance(self.staging_relation, TransportRelation):
+            raise TypeError("staging_relation must be a TransportRelation.")
+        if not self.staging_relation.object_name.startswith("SB_STAGE_"):
+            raise ValueError("staging_relation is not managed by SchemaBridge.")
+        _text(self.target_profile_id, "target_profile_id")
+        _utc(self.started_at, "started_at")
+        _utc(self.completed_at, "completed_at")
+        if self.completed_at < self.started_at:
+            raise ValueError("completed_at precedes started_at.")
+        _positive(self.duration_ms, "duration_ms", allow_zero=True)
+        if not _HASH.fullmatch(self.cleanup_fingerprint):
+            raise ValueError("cleanup_fingerprint is invalid.")
+
+
 __all__ = [
     "WorkflowTransportAttempt",
     "WorkflowTransportAttemptStatus",
     "WorkflowTransportEvidence",
+    "WorkflowStagingCleanupEvidence",
 ]

@@ -14,7 +14,7 @@ from schemabridge.models.execution import MigrationExecutionEvidence
 from schemabridge.models.mapping import ApprovedTableMappingPlan,GeneratedTransformationSql,TableMappingPlan
 from schemabridge.models.validation import GeneratedValidationSql,MigrationValidationExecutionReport
 from schemabridge.models.workflow import WorkflowArtifactType
-from schemabridge.models.workflow_transport import WorkflowTransportEvidence
+from schemabridge.models.workflow_transport import WorkflowStagingCleanupEvidence,WorkflowTransportEvidence
 
 def _canonical(value:Any)->Any:
     if value is None or isinstance(value,(str,bool,int)): return value
@@ -41,6 +41,7 @@ _EXPECTED={
  WorkflowArtifactType.SOURCE_DISCOVERY:TableMetadata,WorkflowArtifactType.TARGET_DISCOVERY:TableMetadata,
  WorkflowArtifactType.MAPPING_PLAN:TableMappingPlan,WorkflowArtifactType.APPROVED_MAPPING_PLAN:ApprovedTableMappingPlan,
  WorkflowArtifactType.STAGING_LOAD_EVIDENCE:WorkflowTransportEvidence,
+ WorkflowArtifactType.STAGING_CLEANUP_EVIDENCE:WorkflowStagingCleanupEvidence,
  WorkflowArtifactType.TRANSFORMATION_PREVIEW:GeneratedTransformationSql,
  WorkflowArtifactType.EXECUTION_EVIDENCE:MigrationExecutionEvidence,
  WorkflowArtifactType.VALIDATION_EXECUTION_REPORT:MigrationValidationExecutionReport,

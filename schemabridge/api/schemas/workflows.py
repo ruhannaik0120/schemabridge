@@ -255,6 +255,18 @@ class WorkflowTransportEvidenceSchema(ApiSchema):
     transport_fingerprint: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
+class WorkflowStagingCleanupEvidenceSchema(ApiSchema):
+    workflow_id: UUID
+    transport_attempt_id: UUID
+    execution_attempt_id: UUID
+    staging_relation: TransportRelationSchema
+    target_profile_id: ProfileId
+    started_at: datetime
+    completed_at: datetime
+    duration_ms: NonNegativeInt
+    cleanup_fingerprint: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
 class WorkflowTransportOperationResponse(WorkflowArtifactAppendResponse):
     attempt: WorkflowTransportAttemptSchema
     result: WorkflowTransportEvidenceSchema
@@ -301,6 +313,8 @@ class MigrationExecutionEvidenceSchema(ApiSchema):
 class WorkflowExecutionOperationResponse(WorkflowArtifactAppendResponse):
     attempt: MigrationExecutionAttemptSchema
     result: MigrationExecutionEvidenceSchema
+    cleanup_artifact: WorkflowArtifactSchema | None = None
+    cleanup: WorkflowStagingCleanupEvidenceSchema | None = None
 
 
 class WorkflowValidationRunSchema(ApiSchema):

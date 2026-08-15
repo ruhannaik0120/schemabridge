@@ -165,12 +165,13 @@ The normal suite uses fakes at remote boundaries. Two optional integration contr
 .\.venv\Scripts\python.exe -m scripts.migrate_control_plane --check
 ```
 
-Expected discovered versions are `1, 2, 3, 4`, corresponding to:
+Expected discovered versions are `1, 2, 3, 4, 5`, corresponding to:
 
 - `0001_workflow_audit.sql`
 - `0002_workflow_execution.sql`
 - `0003_workflow_validation.sql`
 - `0004_workflow_transport.sql`
+- `0005_staging_cleanup.sql`
 
 ## Configure the control-plane PostgreSQL database
 

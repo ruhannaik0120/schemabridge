@@ -20,9 +20,11 @@ from schemabridge.models.workflow_transport import (
     WorkflowTransportAttempt,
     WorkflowTransportAttemptStatus,
     WorkflowTransportEvidence,
+    WorkflowStagingCleanupEvidence,
 )
 from schemabridge.persistence.artifact_codec import (
     workflow_transport_evidence_from_artifact,
+    workflow_staging_cleanup_evidence_from_artifact,
 )
 from schemabridge.persistence.errors import WorkflowArtifactValidationError
 from schemabridge.persistence.serialization import serialize_artifact
@@ -172,3 +174,34 @@ def test_transport_codec_rejects_wrong_artifact_type() -> None:
 
     with pytest.raises(WorkflowArtifactValidationError):
         workflow_transport_evidence_from_artifact(wrong)
+
+
+def test_cleanup_evidence_round_trips_without_business_rows() -> None:
+    evidence = WorkflowStagingCleanupEvidence(
+        workflow_id=WORKFLOW_ID,
+        transport_attempt_id=ATTEMPT_ID,
+        execution_attempt_id=UUID(int=20),
+        staging_relation=STAGING,
+        target_profile_id="snowflake-target",
+        started_at=NOW + timedelta(seconds=3),
+        completed_at=NOW + timedelta(seconds=4),
+        duration_ms=1000,
+        cleanup_fingerprint="b" * 64,
+    )
+    payload, digest = serialize_artifact(
+        WorkflowArtifactType.STAGING_CLEANUP_EVIDENCE,
+        evidence,
+    )
+    artifact = WorkflowArtifact(
+        artifact_id=UUID(int=21),
+        workflow_id=WORKFLOW_ID,
+        artifact_type=WorkflowArtifactType.STAGING_CLEANUP_EVIDENCE,
+        artifact_version=7,
+        schema_version=1,
+        payload=payload,
+        payload_sha256=digest,
+        created_at=NOW + timedelta(seconds=4),
+    )
+
+    assert workflow_staging_cleanup_evidence_from_artifact(artifact) == evidence
+    assert b"customer records" not in payload

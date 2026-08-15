@@ -16,6 +16,7 @@ from schemabridge.models.discovery import (
 )
 from schemabridge.models.metadata import CanonicalType, ColumnMetadata
 from schemabridge.models.transport import BatchWriteResult, DataBatch
+from schemabridge.models.transport import TransportRelation
 from schemabridge.services.batch_transport import (
     BatchTransportDisposition,
     BatchTransportInvariantError,
@@ -426,3 +427,38 @@ def test_profile_bound_run_marks_failure_uncertain_when_cleanup_fails() -> None:
 
     assert result.disposition is BatchTransportDisposition.OUTCOME_UNCERTAIN
     assert result.failure_category == "STAGING_OUTCOME_UNCERTAIN"
+
+
+def test_cleanup_accepts_only_exact_managed_table_and_write_profile() -> None:
+    writer = Writer()
+    services = {
+        "target": _profile_service(
+            "target", writer, write_enabled=True, max_rows=200, timeout=20
+        )
+    }
+    service = ProfileBoundBatchTransportService(services.__getitem__)
+    relation = TransportRelation(
+        catalog_name="SCHEMABRIDGE_LAB",
+        schema_name="PUBLIC",
+        object_name="SB_STAGE_12345678123456781234567812345678",
+    )
+
+    service.cleanup_staging(
+        target_profile_id="target",
+        target_database="SCHEMABRIDGE_LAB",
+        relation=relation,
+        timeout_seconds=60,
+    )
+
+    assert writer.drops == [{"relation": relation, "timeout_seconds": 20}]
+    with pytest.raises(BatchTransportError, match="cleanup failed"):
+        service.cleanup_staging(
+            target_profile_id="target",
+            target_database="SCHEMABRIDGE_LAB",
+            relation=TransportRelation(
+                catalog_name="SCHEMABRIDGE_LAB",
+                schema_name="PUBLIC",
+                object_name="CUSTOMERS_TARGET",
+            ),
+            timeout_seconds=10,
+        )

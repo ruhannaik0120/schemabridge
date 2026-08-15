@@ -16,7 +16,7 @@ from schemabridge.models.execution import MigrationExecutionAttempt,MigrationExe
 from schemabridge.models.mapping import ApprovedTableMappingPlan,GeneratedTransformationSql,TableMappingPlan
 from schemabridge.models.validation import GeneratedValidationSql,MigrationValidationExecutionReport
 from schemabridge.models.workflow_validation import WorkflowValidationRun
-from schemabridge.models.workflow_transport import WorkflowTransportAttempt,WorkflowTransportEvidence
+from schemabridge.models.workflow_transport import WorkflowStagingCleanupEvidence,WorkflowTransportAttempt,WorkflowTransportEvidence
 from schemabridge.models.workflow import *
 from schemabridge.persistence.errors import InvalidWorkflowTransitionError,WorkflowArtifactValidationError,WorkflowOperationUnavailableError
 from schemabridge.persistence.repository import WorkflowRepository
@@ -111,6 +111,7 @@ class WorkflowPersistenceService:
  def record_mapping_proposal(self,workflow_id,expected_version,payload:TableMappingPlan,*,command_hash:str,**context):return self._record_operation(workflow_id,expected_version,WorkflowArtifactType.MAPPING_PLAN,payload,MigrationWorkflowStatus.MAPPING_PROPOSED,command_hash,**context)
  def record_approved_mapping(self,workflow_id,expected_version,payload:ApprovedTableMappingPlan,*,command_hash:str,**context):return self._record_operation(workflow_id,expected_version,WorkflowArtifactType.APPROVED_MAPPING_PLAN,payload,MigrationWorkflowStatus.MAPPING_APPROVED,command_hash,**context)
  def record_transformation_preview(self,workflow_id,expected_version,payload:GeneratedTransformationSql,*,command_hash:str,**context):return self._record_operation(workflow_id,expected_version,WorkflowArtifactType.TRANSFORMATION_PREVIEW,payload,MigrationWorkflowStatus.EXECUTION_READY,command_hash,**context)
+ def record_staging_cleanup(self,workflow_id,expected_version,payload:WorkflowStagingCleanupEvidence,*,command_hash:str,**context):return self._record_operation(workflow_id,expected_version,WorkflowArtifactType.STAGING_CLEANUP_EVIDENCE,payload,None,command_hash,**context)
  def claim_transport_attempt(self,workflow_id,expected_version,attempt:WorkflowTransportAttempt,*,command_hash,idempotency_key,actor_type,actor_reference,request_id):
   """Validate staging eligibility and delegate the durable pre-remote claim."""
 
@@ -200,6 +201,8 @@ class WorkflowPersistenceService:
   elif kind is WorkflowArtifactType.TRANSFORMATION_PREVIEW:valid=tuple(x for x in (workflow.target_relation.catalog_name,workflow.target_relation.schema_name,workflow.target_relation.object_name))==payload.target_relation
   elif kind is WorkflowArtifactType.STAGING_LOAD_EVIDENCE:
    valid=(payload.workflow_id==workflow.workflow_id and payload.source_profile_id==workflow.source_profile_id and payload.target_profile_id==workflow.target_profile_id and (payload.source_relation.catalog_name,payload.source_relation.schema_name,payload.source_relation.object_name)==(workflow.source_relation.catalog_name,workflow.source_relation.schema_name,workflow.source_relation.object_name) and payload.staging_relation.catalog_name==workflow.target_relation.catalog_name and payload.staging_relation.schema_name==workflow.target_relation.schema_name and payload.staging_relation.object_name.startswith("SB_STAGE_"))
+  elif kind is WorkflowArtifactType.STAGING_CLEANUP_EVIDENCE:
+   valid=(payload.workflow_id==workflow.workflow_id and payload.target_profile_id==workflow.target_profile_id and payload.staging_relation.catalog_name==workflow.target_relation.catalog_name and payload.staging_relation.schema_name==workflow.target_relation.schema_name and payload.staging_relation.object_name.startswith("SB_STAGE_"))
   elif kind is WorkflowArtifactType.EXECUTION_EVIDENCE:valid=payload.workflow_id==workflow.workflow_id and payload.target_profile_id==workflow.target_profile_id and payload.target_relation==tuple(x for x in (workflow.target_relation.catalog_name,workflow.target_relation.schema_name,workflow.target_relation.object_name))
   elif kind is WorkflowArtifactType.VALIDATION_PREVIEW:valid=payload[0].relation[-2:]==(workflow.source_relation.schema_name,workflow.source_relation.object_name) and payload[1].relation[-3:]==tuple(x for x in (workflow.target_relation.catalog_name,workflow.target_relation.schema_name,workflow.target_relation.object_name))
   elif kind is WorkflowArtifactType.VALIDATION_EXECUTION_REPORT:

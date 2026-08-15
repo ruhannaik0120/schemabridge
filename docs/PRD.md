@@ -66,9 +66,10 @@ The source PostgreSQL profile may be read-only. The Snowflake target profile mus
 9. Compile and persist a Snowflake transformation preview from that staging evidence.
 10. Execute an approved `INSERT ... SELECT` through the exact target profile.
 11. Persist execution evidence and classify the remote outcome.
-12. Compile paired PostgreSQL and Snowflake validation queries.
-13. Execute both read-only queries and reconcile their aggregate metrics.
-14. Persist the validation report and finish as validated, review-required, or recovery-required.
+12. After a confirmed commit, remove the exact managed staging table and persist cleanup evidence.
+13. Compile paired PostgreSQL and Snowflake validation queries.
+14. Execute both read-only queries and reconcile their aggregate metrics.
+15. Persist the validation report and finish as validated, review-required, or recovery-required.
 
 ## 8. Workflow states
 
@@ -86,17 +87,18 @@ Transition rules are defined by `ALLOWED_TRANSITIONS` in `schemabridge/models/wo
 
 ## 9. Artifact types
 
-The workflow recognizes nine artifact types:
+The workflow recognizes ten artifact types:
 
 1. `SOURCE_DISCOVERY`
 2. `TARGET_DISCOVERY`
 3. `MAPPING_PLAN`
 4. `APPROVED_MAPPING_PLAN`
 5. `STAGING_LOAD_EVIDENCE`
-6. `TRANSFORMATION_PREVIEW`
-7. `EXECUTION_EVIDENCE`
-8. `VALIDATION_PREVIEW`
-9. `VALIDATION_EXECUTION_REPORT`
+6. `STAGING_CLEANUP_EVIDENCE`
+7. `TRANSFORMATION_PREVIEW`
+8. `EXECUTION_EVIDENCE`
+9. `VALIDATION_PREVIEW`
+10. `VALIDATION_EXECUTION_REPORT`
 
 Artifacts use canonical JSON bytes, a schema version, a monotonically increasing artifact version, and a SHA-256 digest. Domain objects are rehydrated through `schemabridge/persistence/artifact_codec.py`.
 
@@ -136,6 +138,8 @@ The execution path accepts no client-provided SQL. It rehydrates the approved ma
 
 Before the remote call, the orchestrator creates a durable execution claim. Concurrent callers cannot independently acquire the same attempt. Completion stores sanitized evidence rather than raw connector output.
 
+After a confirmed commit, the orchestrator removes only the exact managed `SB_STAGE_<UUID>` relation from staging-load evidence and appends `STAGING_CLEANUP_EVIDENCE`. A failed cleanup can be retried through an exact execution replay without repeating the committed insert. Rolled-back or uncertain execution never triggers automatic cleanup.
+
 ## 15. Validation
 
 Validation is a separate post-execution operation. `compile_validation_sql` generates one PostgreSQL query and one Snowflake query containing:
@@ -171,7 +175,7 @@ A mismatch leads to `VALIDATION_REVIEW_REQUIRED`; it is not treated as proof tha
 - validation runs;
 - ordered audit events.
 
-Migrations `0001` through `0004` create and extend this model. Migration `0004` adds durable source-to-staging transport claims and evidence support. Migration files are checksum-verified and applied explicitly by `scripts.migrate_control_plane`; application startup does not run migrations.
+Migrations `0001` through `0005` create and extend this model. Migration `0004` adds durable source-to-staging transport claims, and migration `0005` adds cleanup evidence support. Migration files are checksum-verified and applied explicitly by `scripts.migrate_control_plane`; application startup does not run migrations.
 
 ## 18. Idempotency
 
@@ -213,7 +217,7 @@ Validation uses the same principle and enters `VALIDATION_RECOVERY_REQUIRED` whe
 
 ## 23. Known limitations
 
-- Live verification has covered one five-row PostgreSQL-to-Snowflake workflow with automatic managed staging, committed execution, aggregate validation, and exact replay; production scale and failure recovery have not been live-tested.
+- Live verification has covered one five-row PostgreSQL-to-Snowflake workflow with automatic managed staging, committed execution, aggregate validation, exact replay, and post-commit staging cleanup; production scale and failure recovery have not been live-tested.
 - Batch transport is synchronous and is not optimized as a bulk-file or streaming engine.
 - Validation compares aggregates rather than every row.
 - Production execution currently supports only Snowflake as the target.

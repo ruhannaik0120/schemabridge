@@ -180,8 +180,9 @@ The transport orchestrator creates a uniquely named transient staging table, cop
 10. Persist a unique execution fingerprint and durable `CLAIMED` attempt.
 11. Atomically acquire the `RUNNING` state before calling Snowflake.
 12. Persist sanitized evidence and the resulting workflow state.
+13. On confirmed commit, idempotently drop the exact managed staging relation and persist cleanup evidence.
 
-This ordering prevents a stale preview, altered SQL, duplicate caller, or disabled profile from bypassing approval.
+This ordering prevents a stale preview, altered SQL, duplicate caller, or disabled profile from bypassing approval. Cleanup occurs only after commit; uncertain outcomes retain staging for investigation. If cleanup fails, replay uses the completed execution attempt and retries only `DROP TABLE IF EXISTS`, never the target insert.
 
 ### 9. Validation
 

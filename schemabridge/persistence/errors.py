@@ -56,3 +56,5 @@ class WorkflowTransportConfirmedFailureError(WorkflowError):
     def __init__(self): super().__init__("The staging load failed and was safely cleaned up.")
 class WorkflowTransportOutcomeUncertainError(WorkflowError):
     def __init__(self): super().__init__("The staging load outcome requires manual investigation.")
+class WorkflowStagingCleanupError(WorkflowError):
+    def __init__(self): super().__init__("The committed migration's managed staging table could not be cleaned up.")

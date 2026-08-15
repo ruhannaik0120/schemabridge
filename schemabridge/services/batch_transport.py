@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import re
 from typing import Callable
 from uuid import UUID
 
@@ -276,6 +277,41 @@ class ProfileBoundBatchTransportService:
             source_reader=source.connector,
             staging_writer=target.connector,
         )
+
+    def cleanup_staging(
+        self,
+        *,
+        target_profile_id: str,
+        target_database: str,
+        relation: TransportRelation,
+        timeout_seconds: int,
+    ) -> None:
+        """Idempotently remove one exact SchemaBridge-managed staging table."""
+
+        try:
+            if (
+                not isinstance(relation, TransportRelation)
+                or relation.catalog_name != target_database
+                or re.fullmatch(r"SB_STAGE_[0-9A-F]{32}", relation.object_name) is None
+            ):
+                raise ValueError
+            target = self.database_service_factory(target_profile_id)
+            profile = target.profile
+            if (
+                profile.profile_id != target_profile_id
+                or profile.database != target_database
+                or profile.write_enabled is not True
+                or not isinstance(target.connector, StagingTableWriter)
+            ):
+                raise ValueError
+            BatchTransportService._positive(timeout_seconds, "timeout_seconds")
+            effective_timeout = min(timeout_seconds, profile.timeout_seconds)
+            target.connector.drop_staging_table(
+                relation=relation,
+                timeout_seconds=effective_timeout,
+            )
+        except Exception:
+            raise BatchTransportError("Managed staging cleanup failed.") from None
 
     @staticmethod
     def run(

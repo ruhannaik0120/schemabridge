@@ -41,6 +41,7 @@ from schemabridge.persistence.errors import (
     WorkflowTransportAlreadyInProgressError,
     WorkflowTransportConfirmedFailureError,
     WorkflowTransportOutcomeUncertainError,
+    WorkflowStagingCleanupError,
 )
 
 from ..adapters.migrations import (
@@ -65,6 +66,7 @@ from ..adapters.workflows import (
     validation_run_to_api,
     transport_attempt_to_api,
     transport_evidence_to_api,
+    staging_cleanup_evidence_to_api,
 )
 from ..dependencies import (
     get_workflow_persistence_service,
@@ -165,6 +167,8 @@ def _raise_workflow_error(error: Exception) -> None:
         raise ApiError(409, "STAGING_LOAD_OUTCOME_UNCERTAIN", "The staging load outcome requires manual investigation.") from None
     if isinstance(error, WorkflowTransportConfirmedFailureError):
         raise ApiError(502, "STAGING_LOAD_CONFIRMED_FAILED", "The staging load failed and was safely cleaned up.") from None
+    if isinstance(error, WorkflowStagingCleanupError):
+        raise ApiError(502, "STAGING_CLEANUP_FAILED", "The migration committed, but managed staging cleanup failed and may be retried safely.") from None
     if isinstance(error, WorkflowValidationNotReadyError):
         raise ApiError(409, "WORKFLOW_NOT_READY_FOR_VALIDATION", "The workflow is not ready for validation.") from None
     if isinstance(error, WorkflowValidationAlreadyInProgressError):
@@ -494,6 +498,16 @@ async def execute_workflow_transformation(
             artifact=artifact_to_api(result.artifact),
             attempt=execution_attempt_to_api(result.attempt),
             result=execution_evidence_to_api(result.evidence),
+            cleanup_artifact=(
+                artifact_to_api(result.cleanup_artifact)
+                if result.cleanup_artifact is not None
+                else None
+            ),
+            cleanup=(
+                staging_cleanup_evidence_to_api(result.cleanup_evidence)
+                if result.cleanup_evidence is not None
+                else None
+            ),
         )
     except Exception as error:
         _raise_workflow_error(error)

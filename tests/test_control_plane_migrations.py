@@ -55,8 +55,19 @@ def test_execution_migration_extends_states_artifacts_and_attempt_integrity():
  assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))
 
 def test_migration_filenames_and_checksum_are_deterministic():
- runner=ControlPlaneMigrationRunner(lambda:None);items=runner.discover();assert [x[0] for x in items]==[1,2,3,4]
+ runner=ControlPlaneMigrationRunner(lambda:None);items=runner.discover();assert [x[0] for x in items]==[1,2,3,4,5]
  assert items[0][3]==hashlib.sha256(items[0][2]).hexdigest()
+
+def test_cleanup_migration_extends_artifact_constraints():
+ text=(_MIGRATIONS/'0005_staging_cleanup.sql').read_text(encoding='utf-8').upper()
+ assert 'STAGING_CLEANUP_EVIDENCE' in text
+
+def test_migration_checksum_is_stable_across_windows_line_endings(tmp_path):
+ sql=b"SELECT 1;\nSELECT 2;\n"
+ (tmp_path/'0001_test.sql').write_bytes(sql.replace(b'\n',b'\r\n'))
+ item=ControlPlaneMigrationRunner(lambda:None,tmp_path).discover()[0]
+ assert item[2]==sql
+ assert item[3]==hashlib.sha256(sql).hexdigest()
 
 def test_validation_migration_adds_durable_claims_and_review_states():
  text=(_MIGRATIONS/'0003_workflow_validation.sql').read_text(encoding='utf-8');upper=text.upper()

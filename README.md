@@ -37,12 +37,13 @@ The source and target are data-plane systems. The separate control-plane Postgre
 5. Claim a transport attempt, create managed Snowflake staging, and load PostgreSQL rows in batches.
 6. Compile a Snowflake transformation preview from the approved plan and recorded staging evidence.
 7. Recompile, verify, claim, and execute the approved statement.
-8. Run generated read-only aggregate checks on source and target.
-9. Reconcile results into `VALIDATED` or `VALIDATION_REVIEW_REQUIRED`.
+8. After a confirmed commit, remove SchemaBridge-managed staging and persist cleanup evidence.
+9. Run generated read-only aggregate checks on source and target.
+10. Reconcile results into `VALIDATED` or `VALIDATION_REVIEW_REQUIRED`.
 
 The lower-level `/api/v1/migrations` endpoints expose individual discovery, mapping, preview, and validation operations. The durable `/api/v1/migrations/workflows` endpoints add state transitions, artifacts, audit history, idempotency, optimistic concurrency, execution claims, and recovery states.
 
-Live verification on 2026-08-15 moved five PostgreSQL rows through a SchemaBridge-created Snowflake staging table in three batches, committed five target inserts, passed all 13 aggregate checks, and confirmed that exact transport and execution replays did not duplicate rows.
+Live verification on 2026-08-15 moved five PostgreSQL rows through a SchemaBridge-created Snowflake staging table in three batches, committed five target inserts, passed all 13 aggregate checks, confirmed that exact replays did not duplicate rows, and removed managed staging while preserving the five target rows.
 
 ## Key safety properties
 
@@ -54,6 +55,7 @@ Live verification on 2026-08-15 moved five PostgreSQL rows through a SchemaBridg
 - Immutable, hashed artifacts preserve discovery, approval, preview, execution, and validation evidence.
 - Concurrent transport, execution, and validation are guarded by durable control-plane claims.
 - A remote outcome that cannot be proved is quarantined in a recovery state instead of retried automatically.
+- Only an exact `SB_STAGE_<UUID>` relation is eligible for automatic cleanup, and uncertain execution keeps it for investigation.
 - Public errors and audit metadata exclude credentials, DSNs, hosts, query parameters, and raw driver failures.
 
 ## Quick start

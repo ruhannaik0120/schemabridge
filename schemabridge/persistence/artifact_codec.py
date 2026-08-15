@@ -59,7 +59,10 @@ from schemabridge.models.validation import (
 )
 from schemabridge.models.workflow import WorkflowArtifact, WorkflowArtifactType
 from schemabridge.models.transport import TransportRelation
-from schemabridge.models.workflow_transport import WorkflowTransportEvidence
+from schemabridge.models.workflow_transport import (
+    WorkflowStagingCleanupEvidence,
+    WorkflowTransportEvidence,
+)
 from schemabridge.persistence.errors import WorkflowArtifactValidationError
 
 
@@ -335,6 +338,29 @@ def workflow_transport_evidence_from_artifact(
         raise WorkflowArtifactValidationError() from None
 
 
+def workflow_staging_cleanup_evidence_from_artifact(
+    artifact: WorkflowArtifact,
+) -> WorkflowStagingCleanupEvidence:
+    """Decode proof that managed staging was removed after target commit."""
+
+    if artifact.artifact_type is not WorkflowArtifactType.STAGING_CLEANUP_EVIDENCE:
+        raise WorkflowArtifactValidationError()
+    try:
+        data = dict(_mapping(json.loads(artifact.payload.decode("utf-8"))))
+        for name in ("workflow_id", "transport_attempt_id", "execution_attempt_id"):
+            data[name] = UUID(data[name])
+        data["staging_relation"] = _transport_relation(data["staging_relation"])
+        for name in ("started_at", "completed_at"):
+            data[name] = datetime.fromisoformat(
+                str(data[name]).replace("Z", "+00:00")
+            )
+        return WorkflowStagingCleanupEvidence(**data)
+    except WorkflowArtifactValidationError:
+        raise
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        raise WorkflowArtifactValidationError() from None
+
+
 def _validation_check(value: object) -> ValidationCheckDefinition:
     data = dict(_mapping(value))
     data["check_type"] = ValidationCheckType(data["check_type"])
@@ -414,6 +440,7 @@ __all__ = [
     "table_metadata_from_artifact",
     "transformation_sql_from_artifact",
     "workflow_transport_evidence_from_artifact",
+    "workflow_staging_cleanup_evidence_from_artifact",
     "validation_execution_report_from_artifact",
     "validation_preview_from_artifact",
 ]
