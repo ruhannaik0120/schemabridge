@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from uuid import UUID
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,8 +17,10 @@ from schemabridge.models.discovery import (
 from schemabridge.models.metadata import CanonicalType, ColumnMetadata
 from schemabridge.models.transport import BatchWriteResult, DataBatch
 from schemabridge.services.batch_transport import (
+    BatchTransportDisposition,
     BatchTransportInvariantError,
     BatchTransportService,
+    ProfileBoundBatchTransportService,
 )
 from schemabridge.transport.base import BatchTransportError
 
@@ -304,3 +307,122 @@ def test_staging_name_is_deterministic_for_safe_recovery() -> None:
     )
 
     assert first == second
+
+
+def _profile_service(profile_id, connector, *, write_enabled, max_rows, timeout):
+    return SimpleNamespace(
+        profile=SimpleNamespace(
+            profile_id=profile_id,
+            database="SCHEMABRIDGE_LAB" if write_enabled else "source_db",
+            write_enabled=write_enabled,
+            max_rows=max_rows,
+            timeout_seconds=timeout,
+        ),
+        connector=connector,
+    )
+
+
+def test_profile_bound_prepare_requires_permissions_and_clamps_limits() -> None:
+    reader = Reader(())
+    writer = Writer()
+    services = {
+        "source": _profile_service(
+            "source", reader, write_enabled=False, max_rows=500, timeout=30
+        ),
+        "target": _profile_service(
+            "target", writer, write_enabled=True, max_rows=200, timeout=20
+        ),
+    }
+
+    prepared = ProfileBoundBatchTransportService(services.__getitem__).prepare(
+        source_profile_id="source",
+        target_profile_id="target",
+        target_database="SCHEMABRIDGE_LAB",
+        batch_size=1000,
+        timeout_seconds=60,
+    )
+
+    assert prepared.batch_size == 200
+    assert prepared.timeout_seconds == 20
+
+
+def test_profile_bound_prepare_rejects_read_only_target() -> None:
+    services = {
+        "source": _profile_service(
+            "source", Reader(()), write_enabled=False, max_rows=500, timeout=30
+        ),
+        "target": _profile_service(
+            "target", Writer(), write_enabled=False, max_rows=500, timeout=30
+        ),
+    }
+
+    with pytest.raises(BatchTransportError, match="cannot perform"):
+        ProfileBoundBatchTransportService(services.__getitem__).prepare(
+            source_profile_id="source",
+            target_profile_id="target",
+            target_database="SCHEMABRIDGE_LAB",
+            batch_size=100,
+            timeout_seconds=10,
+        )
+
+
+def test_profile_bound_run_confirms_cleanup_before_allowing_retry() -> None:
+    batch = DataBatch(
+        batch_number=1,
+        column_names=("customer_id", "full_name"),
+        rows=((1, "A"),),
+    )
+
+    class FailingWriter(Writer):
+        def write_batch(self, **kwargs):
+            raise BatchTransportError("remote failure")
+
+    writer = FailingWriter()
+    prepared = SimpleNamespace(
+        source_profile_id="source",
+        target_profile_id="target",
+        source_reader=Reader((batch,)),
+        staging_writer=writer,
+        batch_size=2,
+        timeout_seconds=10,
+    )
+
+    result = ProfileBoundBatchTransportService.run(
+        prepared,
+        transport_id=TRANSPORT_ID,
+        source_table=_table(),
+        target_database="SCHEMABRIDGE_LAB",
+        target_schema="PUBLIC",
+    )
+
+    assert result.disposition is BatchTransportDisposition.CONFIRMED_FAILED_CLEANED_UP
+    assert len(writer.drops) == 1
+
+
+def test_profile_bound_run_marks_failure_uncertain_when_cleanup_fails() -> None:
+    class BrokenWriter(Writer):
+        def prepare_staging_table(self, **kwargs):
+            raise BatchTransportError("create response lost")
+
+        def drop_staging_table(self, **kwargs):
+            raise BatchTransportError("cleanup response lost")
+
+    prepared = SimpleNamespace(
+        source_profile_id="source",
+        target_profile_id="target",
+        source_reader=Reader(()),
+        staging_writer=BrokenWriter(),
+        batch_size=2,
+        timeout_seconds=10,
+    )
+
+    result = ProfileBoundBatchTransportService.run(
+        prepared,
+        transport_id=TRANSPORT_ID,
+        source_table=_table(),
+        target_database="SCHEMABRIDGE_LAB",
+        target_schema="PUBLIC",
+    )
+
+    assert result.disposition is BatchTransportDisposition.OUTCOME_UNCERTAIN
+    assert result.failure_category == "STAGING_OUTCOME_UNCERTAIN"

@@ -7,6 +7,9 @@ rows, or decide durable workflow recovery policy.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
+from typing import Callable
 from uuid import UUID
 
 from schemabridge.models.discovery import TableMetadata
@@ -181,4 +184,156 @@ class BatchTransportService:
         )
 
 
-__all__ = ["BatchTransportInvariantError", "BatchTransportService"]
+class BatchTransportDisposition(str, Enum):
+    """Describe what SchemaBridge can prove after the remote load boundary."""
+
+    SUCCEEDED = "SUCCEEDED"
+    CONFIRMED_FAILED_CLEANED_UP = "CONFIRMED_FAILED_CLEANED_UP"
+    OUTCOME_UNCERTAIN = "OUTCOME_UNCERTAIN"
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedBatchTransport:
+    """Hold credential-free policy and the two already-resolved connectors."""
+
+    source_profile_id: str
+    target_profile_id: str
+    batch_size: int
+    timeout_seconds: int
+    source_reader: BatchSourceReader
+    staging_writer: StagingTableWriter
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileBoundBatchTransportResult:
+    """Return success evidence or a fixed safe failure classification."""
+
+    disposition: BatchTransportDisposition
+    result: BatchTransportResult | None = None
+    failure_category: str | None = None
+
+
+class ProfileBoundBatchTransportService:
+    """Resolve named profiles and classify cleanup after a transfer failure."""
+
+    def __init__(self, database_service_factory: Callable[[str], object]) -> None:
+        self.database_service_factory = database_service_factory
+
+    def prepare(
+        self,
+        *,
+        source_profile_id: str,
+        target_profile_id: str,
+        target_database: str,
+        batch_size: int | None,
+        timeout_seconds: int | None,
+    ) -> PreparedBatchTransport:
+        """Resolve profile limits and require compatible reader/writer connectors."""
+
+        try:
+            source = self.database_service_factory(source_profile_id)
+            target = self.database_service_factory(target_profile_id)
+            source_profile = source.profile
+            target_profile = target.profile
+            if (
+                source_profile.profile_id != source_profile_id
+                or target_profile.profile_id != target_profile_id
+                or target_profile.write_enabled is not True
+                or target_profile.database != target_database
+                or not isinstance(source.connector, BatchSourceReader)
+                or not isinstance(target.connector, StagingTableWriter)
+            ):
+                raise ValueError
+            requested_batch = batch_size or min(
+                source_profile.max_rows,
+                target_profile.max_rows,
+            )
+            requested_timeout = timeout_seconds or min(
+                source_profile.timeout_seconds,
+                target_profile.timeout_seconds,
+            )
+            BatchTransportService._positive(requested_batch, "batch_size")
+            BatchTransportService._positive(requested_timeout, "timeout_seconds")
+            effective_batch = min(
+                requested_batch,
+                source_profile.max_rows,
+                target_profile.max_rows,
+            )
+            effective_timeout = min(
+                requested_timeout,
+                source_profile.timeout_seconds,
+                target_profile.timeout_seconds,
+            )
+        except Exception:
+            raise BatchTransportError(
+                "The selected profiles cannot perform batch transport."
+            ) from None
+        return PreparedBatchTransport(
+            source_profile_id=source_profile_id,
+            target_profile_id=target_profile_id,
+            batch_size=effective_batch,
+            timeout_seconds=effective_timeout,
+            source_reader=source.connector,
+            staging_writer=target.connector,
+        )
+
+    @staticmethod
+    def run(
+        prepared: PreparedBatchTransport,
+        *,
+        transport_id: UUID,
+        source_table: TableMetadata,
+        target_database: str,
+        target_schema: str,
+    ) -> ProfileBoundBatchTransportResult:
+        """Run once and prove cleanup before classifying a failure as retryable."""
+
+        staging_relation = BatchTransportService.staging_relation(
+            transport_id=transport_id,
+            target_database=target_database,
+            target_schema=target_schema,
+        )
+        try:
+            result = BatchTransportService(
+                source_reader=prepared.source_reader,
+                staging_writer=prepared.staging_writer,
+            ).transfer(
+                transport_id=transport_id,
+                source_table=source_table,
+                target_database=target_database,
+                target_schema=target_schema,
+                batch_size=prepared.batch_size,
+                timeout_seconds=prepared.timeout_seconds,
+            )
+            return ProfileBoundBatchTransportResult(
+                disposition=BatchTransportDisposition.SUCCEEDED,
+                result=result,
+            )
+        except Exception:
+            # A failed remote call does not prove whether Snowflake accepted a
+            # batch. A successful DROP proves the managed staging table is gone,
+            # making a later deliberate retry safe.
+            try:
+                prepared.staging_writer.drop_staging_table(
+                    relation=staging_relation,
+                    timeout_seconds=prepared.timeout_seconds,
+                )
+            except Exception:
+                return ProfileBoundBatchTransportResult(
+                    disposition=BatchTransportDisposition.OUTCOME_UNCERTAIN,
+                    failure_category="STAGING_OUTCOME_UNCERTAIN",
+                )
+            return ProfileBoundBatchTransportResult(
+                disposition=BatchTransportDisposition.CONFIRMED_FAILED_CLEANED_UP,
+                failure_category="STAGING_LOAD_FAILED",
+            )
+
+
+__all__ = [
+    "BatchTransportDisposition",
+    "BatchTransportInvariantError",
+    "BatchTransportService",
+    "PreparedBatchTransport",
+    "ProfileBoundBatchTransportResult",
+    "ProfileBoundBatchTransportService",
+]

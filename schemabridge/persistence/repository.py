@@ -23,6 +23,10 @@ from schemabridge.models.workflow import (
     WorkflowArtifact,
 )
 from schemabridge.models.workflow_validation import WorkflowValidationRun
+from schemabridge.models.workflow_transport import (
+    WorkflowTransportAttempt,
+    WorkflowTransportEvidence,
+)
 
 
 class WorkflowRepository(Protocol):
@@ -139,6 +143,60 @@ class WorkflowRepository(Protocol):
         request_hash: str,
     ) -> MigrationExecutionAttempt | None:
         """Resolve an exact execution replay or detect a conflicting key."""
+
+        ...
+
+    def get_transport_attempt_by_command(
+        self,
+        workflow_id: UUID,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> WorkflowTransportAttempt | None:
+        """Resolve an exact staging-load replay or detect a conflicting key."""
+
+        ...
+
+    def claim_transport_attempt(
+        self,
+        workflow_id: UUID,
+        expected_version: int,
+        attempt: WorkflowTransportAttempt,
+        event: MigrationAuditEvent,
+        *,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> tuple[MigrationWorkflow, WorkflowTransportAttempt, bool]:
+        """Atomically claim staging transport before any remote table change."""
+
+        ...
+
+    def mark_transport_running(
+        self, attempt_id: UUID, running_at
+    ) -> tuple[WorkflowTransportAttempt, bool]:
+        """Let exactly one claimant begin the remote staging operation."""
+
+        ...
+
+    def complete_transport_attempt(
+        self,
+        workflow_id: UUID,
+        expected_version: int,
+        attempt_id: UUID,
+        evidence: WorkflowTransportEvidence | None,
+        artifact: WorkflowArtifact | None,
+        artifact_event: MigrationAuditEvent | None,
+        new_status: MigrationWorkflowStatus,
+        transition_event: MigrationAuditEvent,
+        *,
+        completed_at,
+        failure_category: str | None,
+    ) -> tuple[MigrationWorkflow, WorkflowTransportAttempt, WorkflowArtifact | None]:
+        """Atomically store staging outcome, optional evidence, state, and audit."""
+
+        ...
+
+    def get_transport_attempt(self, attempt_id: UUID) -> WorkflowTransportAttempt:
+        """Load one durable staging transport attempt."""
 
         ...
 

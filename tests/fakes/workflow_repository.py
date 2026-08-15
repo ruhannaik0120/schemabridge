@@ -4,13 +4,14 @@ from threading import RLock
 
 from schemabridge.models.workflow import MigrationWorkflowStatus
 from schemabridge.models.execution import MigrationExecutionAttemptStatus
+from schemabridge.models.workflow_transport import WorkflowTransportAttemptStatus
 from schemabridge.models.workflow_validation import WorkflowValidationRunStatus
-from schemabridge.persistence.errors import InvalidWorkflowTransitionError,WorkflowArtifactValidationError,WorkflowConflictError,WorkflowExecutionAlreadyInProgressError,WorkflowIdempotencyConflictError,WorkflowNotFoundError,WorkflowPersistenceError,WorkflowValidationAlreadyInProgressError
+from schemabridge.persistence.errors import InvalidWorkflowTransitionError,WorkflowArtifactValidationError,WorkflowConflictError,WorkflowExecutionAlreadyInProgressError,WorkflowIdempotencyConflictError,WorkflowNotFoundError,WorkflowPersistenceError,WorkflowTransportAlreadyInProgressError,WorkflowValidationAlreadyInProgressError
 
 
 class InMemoryWorkflowRepository:
  def __init__(self):
-  self._workflows={};self._artifacts={};self._events={};self._commands={};self._attempts={};self._validation_runs={};self._lock=RLock();self.fail_audit=False;self.fail_idempotency=False
+  self._workflows={};self._artifacts={};self._events={};self._commands={};self._transport_attempts={};self._attempts={};self._validation_runs={};self._lock=RLock();self.fail_audit=False;self.fail_idempotency=False
  def _replay(self,scope,key,digest):
   stored=self._commands.get((scope,key))
   if stored is None:return None
@@ -99,6 +100,50 @@ class InMemoryWorkflowRepository:
  def get_latest_artifact(self,workflow_id,artifact_type):
   self.get_workflow(workflow_id);matches=[item for item in self._artifacts.get(workflow_id,[]) if item.artifact_type is artifact_type]
   return matches[-1] if matches else None
+ def get_transport_attempt_by_command(self,workflow_id,idempotency_key,request_hash):
+  with self._lock:
+   attempt_id=self._replay(f"{workflow_id}:TRANSPORT",idempotency_key,request_hash)
+   return self._transport_attempts[attempt_id] if attempt_id is not None else None
+ def claim_transport_attempt(self,workflow_id,expected_version,attempt,event,*,idempotency_key,request_hash):
+  with self._lock:
+   scope=f"{workflow_id}:TRANSPORT";replay=self._replay(scope,idempotency_key,request_hash)
+   if replay is not None:return self.get_workflow(workflow_id),self._transport_attempts[replay],False
+   old=self.get_workflow(workflow_id)
+   if old.version!=expected_version:raise WorkflowConflictError()
+   if old.status is not MigrationWorkflowStatus.MAPPING_APPROVED:raise InvalidWorkflowTransitionError()
+   if any(item.workflow_id==workflow_id and item.status in {WorkflowTransportAttemptStatus.CLAIMED,WorkflowTransportAttemptStatus.RUNNING,WorkflowTransportAttemptStatus.SUCCEEDED,WorkflowTransportAttemptStatus.OUTCOME_UNCERTAIN} for item in self._transport_attempts.values()):raise WorkflowTransportAlreadyInProgressError()
+   snapshot=(old,dict(self._transport_attempts),list(self._events.get(workflow_id,[])),dict(self._commands))
+   try:
+    result=replace(old,status=MigrationWorkflowStatus.STAGING,version=old.version+1,updated_at=attempt.claimed_at)
+    self._workflows[workflow_id]=result;self._transport_attempts[attempt.attempt_id]=attempt;self._event(replace(event,workflow_version=result.version));self._store(scope,idempotency_key,request_hash,attempt.attempt_id)
+    return result,attempt,True
+   except Exception:
+    self._workflows[workflow_id]=snapshot[0];self._transport_attempts=snapshot[1];self._events[workflow_id]=snapshot[2];self._commands=snapshot[3];raise
+ def mark_transport_running(self,attempt_id,running_at):
+  with self._lock:
+   attempt=self._transport_attempts[attempt_id]
+   if attempt.status is not WorkflowTransportAttemptStatus.CLAIMED:return attempt,False
+   result=replace(attempt,status=WorkflowTransportAttemptStatus.RUNNING,running_at=running_at);self._transport_attempts[attempt_id]=result;return result,True
+ def complete_transport_attempt(self,workflow_id,expected_version,attempt_id,evidence,artifact,artifact_event,new_status,transition_event,*,completed_at,failure_category):
+  with self._lock:
+   old=self.get_workflow(workflow_id);attempt=self._transport_attempts[attempt_id]
+   if old.version!=expected_version or old.status is not MigrationWorkflowStatus.STAGING or attempt.status is not WorkflowTransportAttemptStatus.RUNNING:raise WorkflowConflictError()
+   if (evidence is None)!=(artifact is None) or (artifact_event is None)!=(artifact is None):raise WorkflowPersistenceError()
+   if artifact is not None and artifact.artifact_version!=old.latest_artifact_version+1:raise WorkflowConflictError()
+   snapshot=(old,dict(self._transport_attempts),list(self._artifacts.get(workflow_id,[])),list(self._events.get(workflow_id,[])))
+   try:
+    terminal=WorkflowTransportAttemptStatus.SUCCEEDED if evidence is not None else WorkflowTransportAttemptStatus.FAILED_CLEANED_UP if new_status is MigrationWorkflowStatus.MAPPING_APPROVED else WorkflowTransportAttemptStatus.OUTCOME_UNCERTAIN
+    updated_attempt=replace(attempt,status=terminal,completed_at=completed_at,evidence_artifact_id=artifact.artifact_id if artifact else None,failure_category=failure_category)
+    latest=artifact.artifact_version if artifact else old.latest_artifact_version
+    result=replace(old,status=new_status,version=old.version+1,updated_at=completed_at,latest_artifact_version=latest)
+    self._transport_attempts[attempt_id]=updated_attempt;self._workflows[workflow_id]=result
+    if artifact is not None:self._artifacts.setdefault(workflow_id,[]).append(artifact);self._event(replace(artifact_event,workflow_version=result.version))
+    self._event(replace(transition_event,workflow_version=result.version));return result,updated_attempt,artifact
+   except Exception:
+    self._workflows[workflow_id]=snapshot[0];self._transport_attempts=snapshot[1];self._artifacts[workflow_id]=snapshot[2];self._events[workflow_id]=snapshot[3];raise
+ def get_transport_attempt(self,attempt_id):
+  try:return self._transport_attempts[attempt_id]
+  except KeyError:raise WorkflowNotFoundError() from None
  def get_execution_attempt_by_command(self,workflow_id,idempotency_key,request_hash):
   with self._lock:
    attempt_id=self._replay(f"{workflow_id}:EXECUTION",idempotency_key,request_hash)

@@ -11,6 +11,8 @@ from datetime import timezone
 from uuid import UUID
 from schemabridge.models.execution import MigrationExecutionAttempt,MigrationExecutionAttemptStatus
 from schemabridge.models.workflow_validation import WorkflowValidationRun,WorkflowValidationRunStatus
+from schemabridge.models.transport import TransportRelation
+from schemabridge.models.workflow_transport import WorkflowTransportAttempt,WorkflowTransportAttemptStatus,WorkflowTransportEvidence
 from schemabridge.models.workflow import *
 from schemabridge.persistence.config import ControlPlaneConfig
 from schemabridge.persistence.errors import *
@@ -21,6 +23,7 @@ _ART_COLUMNS="artifact_id,workflow_id,artifact_type,artifact_version,schema_vers
 _EVENT_COLUMNS="sequence_number,event_id,workflow_id,event_type,previous_status,new_status,workflow_version,artifact_id,artifact_type,actor_type,actor_reference,request_id,idempotency_key,occurred_at,metadata"
 _ATT_COLUMNS="attempt_id,workflow_id,approved_mapping_artifact_version,transformation_preview_artifact_version,target_profile_id,execution_fingerprint,status,timeout_seconds,claimed_at,actor_type,idempotency_key,actor_reference,running_at,completed_at,evidence_artifact_id,failure_category"
 _VAL_COLUMNS="run_id,workflow_id,execution_attempt_id,execution_evidence_artifact_version,approved_mapping_artifact_version,validation_preview_artifact_version,source_profile_id,target_profile_id,validation_fingerprint,status,timeout_seconds,claimed_at,actor_type,idempotency_key,actor_reference,running_at,completed_at,duration_ms,evidence_artifact_id,failure_category"
+_TRANS_COLUMNS="attempt_id,workflow_id,source_discovery_artifact_version,approved_mapping_artifact_version,source_profile_id,target_profile_id,staging_relation,batch_size,timeout_seconds,transport_fingerprint,status,claimed_at,actor_type,idempotency_key,actor_reference,running_at,completed_at,evidence_artifact_id,failure_category"
 
 class PostgreSQLWorkflowRepository:
  """Persist workflow control-plane records with transactional guarantees."""
@@ -62,6 +65,10 @@ class PostgreSQLWorkflowRepository:
  @staticmethod
  def _validation_run(row):
   return WorkflowValidationRun(run_id=row[0],workflow_id=row[1],execution_attempt_id=row[2],execution_evidence_artifact_version=row[3],approved_mapping_artifact_version=row[4],validation_preview_artifact_version=row[5],source_profile_id=row[6],target_profile_id=row[7],validation_fingerprint=row[8],status=WorkflowValidationRunStatus(row[9]),timeout_seconds=row[10],claimed_at=row[11].astimezone(timezone.utc),actor_type=AuditActorType(row[12]),idempotency_key=row[13],actor_reference=row[14],running_at=row[15].astimezone(timezone.utc) if row[15] else None,completed_at=row[16].astimezone(timezone.utc) if row[16] else None,duration_ms=row[17],evidence_artifact_id=row[18],failure_category=row[19])
+ @staticmethod
+ def _transport_attempt(row):
+  relation=json.loads(row[6]) if isinstance(row[6],str) else row[6]
+  return WorkflowTransportAttempt(attempt_id=row[0],workflow_id=row[1],source_discovery_artifact_version=row[2],approved_mapping_artifact_version=row[3],source_profile_id=row[4],target_profile_id=row[5],staging_relation=TransportRelation(**relation),batch_size=row[7],timeout_seconds=row[8],transport_fingerprint=row[9],status=WorkflowTransportAttemptStatus(row[10]),claimed_at=row[11].astimezone(timezone.utc),actor_type=AuditActorType(row[12]),idempotency_key=row[13],actor_reference=row[14],running_at=row[15].astimezone(timezone.utc) if row[15] else None,completed_at=row[16].astimezone(timezone.utc) if row[16] else None,evidence_artifact_id=row[17],failure_category=row[18])
  def _idem(self,cursor,scope,key,digest):
   """Serialize one idempotency scope and return its recorded result if present."""
 
@@ -213,6 +220,120 @@ class PostgreSQLWorkflowRepository:
  def get_artifact(self,workflow_id,artifact_version):return self._get_artifact(workflow_id,"artifact_version=%s",(artifact_version,))
  def get_artifact_by_id(self,workflow_id,artifact_id):return self._get_artifact(workflow_id,"artifact_id=%s",(artifact_id,))
  def get_latest_artifact(self,workflow_id,artifact_type):return self._get_artifact(workflow_id,"artifact_type=%s ORDER BY artifact_version DESC LIMIT 1",(artifact_type.value,))
+ def get_transport_attempt_by_command(self,workflow_id,idempotency_key,request_hash):
+  connection=self._open();scope=f"{workflow_id}:TRANSPORT"
+  try:
+   with connection.cursor() as cursor:
+    cursor.execute("SELECT request_sha256,result_reference FROM migration_idempotency WHERE command_scope=%s AND idempotency_key=%s",(scope,idempotency_key));row=cursor.fetchone()
+    if row is None:return None
+    if row[0]!=request_hash:raise WorkflowIdempotencyConflictError()
+    cursor.execute(f"SELECT {_TRANS_COLUMNS} FROM migration_transport_attempts WHERE attempt_id=%s",(row[1],));stored=cursor.fetchone()
+    if stored is None:raise WorkflowPersistenceError()
+    return self._transport_attempt(stored)
+  except WorkflowError:raise
+  except Exception:raise WorkflowPersistenceError() from None
+  finally:self._close(connection)
+ def claim_transport_attempt(self,workflow_id,expected_version,attempt,event,*,idempotency_key,request_hash):
+  """Claim one staging load before any remote table operation starts."""
+
+  if attempt.workflow_id!=workflow_id or attempt.status is not WorkflowTransportAttemptStatus.CLAIMED:raise WorkflowPersistenceError()
+  if event.workflow_id!=workflow_id or event.previous_status is not MigrationWorkflowStatus.MAPPING_APPROVED or event.new_status is not MigrationWorkflowStatus.STAGING:raise WorkflowPersistenceError()
+  connection=self._open();scope=f"{workflow_id}:TRANSPORT"
+  try:
+   with connection.transaction():
+    with connection.cursor() as cursor:
+     replay=self._idem(cursor,scope,idempotency_key,request_hash)
+     if replay:
+      cursor.execute(f"SELECT {_WF_COLUMNS} FROM migration_workflows WHERE workflow_id=%s",(workflow_id,));workflow=self._workflow(cursor.fetchone())
+      cursor.execute(f"SELECT {_TRANS_COLUMNS} FROM migration_transport_attempts WHERE attempt_id=%s",(replay[1],));return workflow,self._transport_attempt(cursor.fetchone()),False
+     cursor.execute(f"SELECT {_WF_COLUMNS} FROM migration_workflows WHERE workflow_id=%s FOR UPDATE",(workflow_id,));row=cursor.fetchone()
+     if row is None:raise WorkflowNotFoundError()
+     old=self._workflow(row)
+     if old.version!=expected_version:raise WorkflowConflictError()
+     if old.status is not MigrationWorkflowStatus.MAPPING_APPROVED:raise InvalidWorkflowTransitionError()
+     cursor.execute("SELECT 1 FROM migration_transport_attempts WHERE workflow_id=%s AND status IN ('CLAIMED','RUNNING','SUCCEEDED','OUTCOME_UNCERTAIN') LIMIT 1",(workflow_id,))
+     if cursor.fetchone() is not None:raise WorkflowTransportAlreadyInProgressError()
+     relation=json.dumps({"catalog_name":attempt.staging_relation.catalog_name,"schema_name":attempt.staging_relation.schema_name,"object_name":attempt.staging_relation.object_name},ensure_ascii=False,sort_keys=True,separators=(",",":"))
+     cursor.execute("INSERT INTO migration_transport_attempts(attempt_id,workflow_id,source_discovery_artifact_version,approved_mapping_artifact_version,source_profile_id,target_profile_id,staging_relation,batch_size,timeout_seconds,transport_fingerprint,status,claimed_at,actor_type,idempotency_key,actor_reference) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s)",(attempt.attempt_id,workflow_id,attempt.source_discovery_artifact_version,attempt.approved_mapping_artifact_version,attempt.source_profile_id,attempt.target_profile_id,relation,attempt.batch_size,attempt.timeout_seconds,attempt.transport_fingerprint,attempt.status.value,attempt.claimed_at,attempt.actor_type.value,attempt.idempotency_key,attempt.actor_reference))
+     version=old.version+1;cursor.execute("UPDATE migration_workflows SET status=%s,version=%s,updated_at=%s WHERE workflow_id=%s AND version=%s",(MigrationWorkflowStatus.STAGING.value,version,attempt.claimed_at,workflow_id,expected_version))
+     if cursor.rowcount!=1:raise WorkflowConflictError()
+     self._insert_event(cursor,event,version);self._insert_idem(cursor,scope,idempotency_key,"LOAD_STAGING",request_hash,workflow_id,attempt.attempt_id,attempt.claimed_at)
+     result=MigrationWorkflow(workflow_id=old.workflow_id,display_name=old.display_name,source_profile_id=old.source_profile_id,target_profile_id=old.target_profile_id,source_relation=old.source_relation,target_relation=old.target_relation,status=MigrationWorkflowStatus.STAGING,version=version,created_at=old.created_at,updated_at=attempt.claimed_at,latest_artifact_version=old.latest_artifact_version,last_error_code=old.last_error_code,warnings=old.warnings)
+     return result,attempt,True
+  except WorkflowError:raise
+  except Exception:raise WorkflowPersistenceError() from None
+  finally:self._close(connection)
+ def mark_transport_running(self,attempt_id,running_at):
+  connection=self._open()
+  try:
+   with connection.transaction():
+    with connection.cursor() as cursor:
+     cursor.execute(f"SELECT {_TRANS_COLUMNS} FROM migration_transport_attempts WHERE attempt_id=%s FOR UPDATE",(attempt_id,));row=cursor.fetchone()
+     if row is None:raise WorkflowNotFoundError()
+     attempt=self._transport_attempt(row)
+     if attempt.status is not WorkflowTransportAttemptStatus.CLAIMED:return attempt,False
+     cursor.execute("UPDATE migration_transport_attempts SET status='RUNNING',running_at=%s WHERE attempt_id=%s AND status='CLAIMED'",(running_at,attempt_id))
+     if cursor.rowcount!=1:raise WorkflowConflictError()
+     cursor.execute(f"SELECT {_TRANS_COLUMNS} FROM migration_transport_attempts WHERE attempt_id=%s",(attempt_id,));return self._transport_attempt(cursor.fetchone()),True
+  except WorkflowError:raise
+  except Exception:raise WorkflowPersistenceError() from None
+  finally:self._close(connection)
+ def complete_transport_attempt(self,workflow_id,expected_version,attempt_id,evidence,artifact,artifact_event,new_status,transition_event,*,completed_at,failure_category):
+  """Store the staging result and workflow transition in one transaction."""
+
+  if (evidence is None)!=(artifact is None) or (artifact_event is None)!=(artifact is None):raise WorkflowPersistenceError()
+  if new_status is MigrationWorkflowStatus.STAGED:
+   if evidence is None or failure_category is not None or artifact.artifact_type is not WorkflowArtifactType.STAGING_LOAD_EVIDENCE:raise WorkflowPersistenceError()
+   terminal=WorkflowTransportAttemptStatus.SUCCEEDED
+  elif new_status is MigrationWorkflowStatus.MAPPING_APPROVED:
+   if evidence is not None or failure_category is None:raise WorkflowPersistenceError()
+   terminal=WorkflowTransportAttemptStatus.FAILED_CLEANED_UP
+  elif new_status is MigrationWorkflowStatus.STAGING_RECOVERY_REQUIRED:
+   if evidence is not None or failure_category is None:raise WorkflowPersistenceError()
+   terminal=WorkflowTransportAttemptStatus.OUTCOME_UNCERTAIN
+  else:raise WorkflowPersistenceError()
+  if transition_event.workflow_id!=workflow_id or transition_event.previous_status is not MigrationWorkflowStatus.STAGING or transition_event.new_status is not new_status:raise WorkflowPersistenceError()
+  if artifact is not None and (artifact.workflow_id!=workflow_id or artifact_event.artifact_id!=artifact.artifact_id):raise WorkflowPersistenceError()
+  connection=self._open()
+  try:
+   with connection.transaction():
+    with connection.cursor() as cursor:
+     cursor.execute(f"SELECT {_WF_COLUMNS} FROM migration_workflows WHERE workflow_id=%s FOR UPDATE",(workflow_id,));row=cursor.fetchone()
+     if row is None:raise WorkflowNotFoundError()
+     old=self._workflow(row)
+     if old.version!=expected_version or old.status is not MigrationWorkflowStatus.STAGING:raise WorkflowConflictError()
+     cursor.execute(f"SELECT {_TRANS_COLUMNS} FROM migration_transport_attempts WHERE attempt_id=%s FOR UPDATE",(attempt_id,));attempt_row=cursor.fetchone()
+     if attempt_row is None:raise WorkflowNotFoundError()
+     attempt=self._transport_attempt(attempt_row)
+     if attempt.status is not WorkflowTransportAttemptStatus.RUNNING:raise WorkflowConflictError()
+     if evidence is not None:
+      if evidence.attempt_id!=attempt_id or evidence.workflow_id!=workflow_id or evidence.transport_fingerprint!=attempt.transport_fingerprint or evidence.source_discovery_artifact_version!=attempt.source_discovery_artifact_version or evidence.approved_mapping_artifact_version!=attempt.approved_mapping_artifact_version or evidence.staging_relation!=attempt.staging_relation:raise WorkflowPersistenceError()
+      if artifact.artifact_version!=old.latest_artifact_version+1:raise WorkflowConflictError()
+      cursor.execute("INSERT INTO migration_workflow_artifacts(artifact_id,workflow_id,artifact_type,artifact_version,schema_version,payload,payload_sha256,created_at) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s)",(artifact.artifact_id,workflow_id,artifact.artifact_type.value,artifact.artifact_version,artifact.schema_version,artifact.payload.decode("utf-8"),artifact.payload_sha256,artifact.created_at))
+     evidence_id=artifact.artifact_id if artifact is not None else None
+     cursor.execute("UPDATE migration_transport_attempts SET status=%s,completed_at=%s,evidence_artifact_id=%s,failure_category=%s WHERE attempt_id=%s AND status='RUNNING'",(terminal.value,completed_at,evidence_id,failure_category,attempt_id))
+     if cursor.rowcount!=1:raise WorkflowConflictError()
+     latest=artifact.artifact_version if artifact is not None else old.latest_artifact_version
+     version=old.version+1;cursor.execute("UPDATE migration_workflows SET status=%s,version=%s,updated_at=%s,latest_artifact_version=%s WHERE workflow_id=%s AND version=%s",(new_status.value,version,completed_at,latest,workflow_id,expected_version))
+     if cursor.rowcount!=1:raise WorkflowConflictError()
+     if artifact_event is not None:self._insert_event(cursor,artifact_event,version)
+     self._insert_event(cursor,transition_event,version)
+     updated_attempt=WorkflowTransportAttempt(attempt_id=attempt.attempt_id,workflow_id=attempt.workflow_id,source_discovery_artifact_version=attempt.source_discovery_artifact_version,approved_mapping_artifact_version=attempt.approved_mapping_artifact_version,source_profile_id=attempt.source_profile_id,target_profile_id=attempt.target_profile_id,staging_relation=attempt.staging_relation,batch_size=attempt.batch_size,timeout_seconds=attempt.timeout_seconds,transport_fingerprint=attempt.transport_fingerprint,status=terminal,claimed_at=attempt.claimed_at,actor_type=attempt.actor_type,idempotency_key=attempt.idempotency_key,actor_reference=attempt.actor_reference,running_at=attempt.running_at,completed_at=completed_at,evidence_artifact_id=evidence_id,failure_category=failure_category)
+     result=MigrationWorkflow(workflow_id=old.workflow_id,display_name=old.display_name,source_profile_id=old.source_profile_id,target_profile_id=old.target_profile_id,source_relation=old.source_relation,target_relation=old.target_relation,status=new_status,version=version,created_at=old.created_at,updated_at=completed_at,latest_artifact_version=latest,last_error_code=old.last_error_code,warnings=old.warnings)
+     return result,updated_attempt,artifact
+  except WorkflowError:raise
+  except Exception:raise WorkflowPersistenceError() from None
+  finally:self._close(connection)
+ def get_transport_attempt(self,attempt_id):
+  connection=self._open()
+  try:
+   with connection.cursor() as cursor:
+    cursor.execute(f"SELECT {_TRANS_COLUMNS} FROM migration_transport_attempts WHERE attempt_id=%s",(attempt_id,));row=cursor.fetchone()
+    if row is None:raise WorkflowNotFoundError()
+    return self._transport_attempt(row)
+  except WorkflowError:raise
+  except Exception:raise WorkflowPersistenceError() from None
+  finally:self._close(connection)
  def get_execution_attempt_by_command(self,workflow_id,idempotency_key,request_hash):
   connection=self._open();scope=f"{workflow_id}:EXECUTION"
   try:

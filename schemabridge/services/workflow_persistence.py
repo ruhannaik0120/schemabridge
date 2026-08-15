@@ -16,6 +16,7 @@ from schemabridge.models.execution import MigrationExecutionAttempt,MigrationExe
 from schemabridge.models.mapping import ApprovedTableMappingPlan,GeneratedTransformationSql,TableMappingPlan
 from schemabridge.models.validation import GeneratedValidationSql,MigrationValidationExecutionReport
 from schemabridge.models.workflow_validation import WorkflowValidationRun
+from schemabridge.models.workflow_transport import WorkflowTransportAttempt,WorkflowTransportEvidence
 from schemabridge.models.workflow import *
 from schemabridge.persistence.errors import InvalidWorkflowTransitionError,WorkflowArtifactValidationError,WorkflowOperationUnavailableError
 from schemabridge.persistence.repository import WorkflowRepository
@@ -48,6 +49,8 @@ class WorkflowPersistenceService:
  def get_artifact(self,workflow_id,artifact_version):return self.repository.get_artifact(workflow_id,artifact_version)
  def get_artifact_by_id(self,workflow_id,artifact_id):return self.repository.get_artifact_by_id(workflow_id,artifact_id)
  def get_latest_artifact(self,workflow_id,artifact_type):return self.repository.get_latest_artifact(workflow_id,artifact_type)
+ def get_transport_attempt_by_command(self,workflow_id,idempotency_key,command_hash):return self.repository.get_transport_attempt_by_command(workflow_id,idempotency_key,command_hash)
+ def get_transport_attempt(self,attempt_id):return self.repository.get_transport_attempt(attempt_id)
  def get_execution_attempt_by_command(self,workflow_id,idempotency_key,command_hash):return self.repository.get_execution_attempt_by_command(workflow_id,idempotency_key,command_hash)
  def get_execution_attempt(self,attempt_id):return self.repository.get_execution_attempt(attempt_id)
  def get_validation_run_by_command(self,workflow_id,idempotency_key,command_hash):return self.repository.get_validation_run_by_command(workflow_id,idempotency_key,command_hash)
@@ -60,8 +63,8 @@ class WorkflowPersistenceService:
   digest=request_hash("TRANSITION_STATUS",{"workflow_id":workflow_id,"expected_version":expected_version,"new_status":new_status,"reason_code":reason_code})
   # A stale expected version is resolved by the repository: it may be an exact
   # idempotent replay, which must remain valid after later workflow mutations.
-  managed={MigrationWorkflowStatus.EXECUTION_READY,MigrationWorkflowStatus.EXECUTING,MigrationWorkflowStatus.EXECUTED,MigrationWorkflowStatus.EXECUTION_RECOVERY_REQUIRED,MigrationWorkflowStatus.VALIDATION_READY,MigrationWorkflowStatus.VALIDATING,MigrationWorkflowStatus.VALIDATED,MigrationWorkflowStatus.VALIDATION_REVIEW_REQUIRED,MigrationWorkflowStatus.VALIDATION_RECOVERY_REQUIRED}
-  if current.version==expected_version and (new_status in managed or current.status in {MigrationWorkflowStatus.EXECUTING,MigrationWorkflowStatus.VALIDATING}):raise InvalidWorkflowTransitionError()
+  managed={MigrationWorkflowStatus.STAGING,MigrationWorkflowStatus.STAGED,MigrationWorkflowStatus.STAGING_RECOVERY_REQUIRED,MigrationWorkflowStatus.EXECUTION_READY,MigrationWorkflowStatus.EXECUTING,MigrationWorkflowStatus.EXECUTED,MigrationWorkflowStatus.EXECUTION_RECOVERY_REQUIRED,MigrationWorkflowStatus.VALIDATION_READY,MigrationWorkflowStatus.VALIDATING,MigrationWorkflowStatus.VALIDATED,MigrationWorkflowStatus.VALIDATION_REVIEW_REQUIRED,MigrationWorkflowStatus.VALIDATION_RECOVERY_REQUIRED}
+  if current.version==expected_version and (new_status in managed or current.status in {MigrationWorkflowStatus.STAGING,MigrationWorkflowStatus.EXECUTING,MigrationWorkflowStatus.VALIDATING}):raise InvalidWorkflowTransitionError()
   if current.version==expected_version and new_status is not current.status and new_status not in ALLOWED_TRANSITIONS[current.status]:raise InvalidWorkflowTransitionError()
   event_type=MigrationAuditEventType.WORKFLOW_FAILED if new_status is MigrationWorkflowStatus.FAILED else MigrationAuditEventType.WORKFLOW_CANCELLED if new_status is MigrationWorkflowStatus.CANCELLED else MigrationAuditEventType.STATUS_CHANGED
   now=self.clock();event=self._event(current,event_type,current.status,new_status,actor_type,actor_reference,request_id,idempotency_key,now,AuditMetadata(reason_code=reason_code))
@@ -108,6 +111,30 @@ class WorkflowPersistenceService:
  def record_mapping_proposal(self,workflow_id,expected_version,payload:TableMappingPlan,*,command_hash:str,**context):return self._record_operation(workflow_id,expected_version,WorkflowArtifactType.MAPPING_PLAN,payload,MigrationWorkflowStatus.MAPPING_PROPOSED,command_hash,**context)
  def record_approved_mapping(self,workflow_id,expected_version,payload:ApprovedTableMappingPlan,*,command_hash:str,**context):return self._record_operation(workflow_id,expected_version,WorkflowArtifactType.APPROVED_MAPPING_PLAN,payload,MigrationWorkflowStatus.MAPPING_APPROVED,command_hash,**context)
  def record_transformation_preview(self,workflow_id,expected_version,payload:GeneratedTransformationSql,*,command_hash:str,**context):return self._record_operation(workflow_id,expected_version,WorkflowArtifactType.TRANSFORMATION_PREVIEW,payload,MigrationWorkflowStatus.EXECUTION_READY,command_hash,**context)
+ def claim_transport_attempt(self,workflow_id,expected_version,attempt:WorkflowTransportAttempt,*,command_hash,idempotency_key,actor_type,actor_reference,request_id):
+  """Validate staging eligibility and delegate the durable pre-remote claim."""
+
+  self._context(actor_type,actor_reference,request_id,idempotency_key);self._expected(expected_version)
+  if not isinstance(command_hash,str) or re.fullmatch(r"[0-9a-f]{64}",command_hash) is None:raise ValueError("command_hash is invalid.")
+  workflow=self.repository.get_workflow(workflow_id)
+  if workflow.version==expected_version and workflow.status is not MigrationWorkflowStatus.MAPPING_APPROVED:raise InvalidWorkflowTransitionError()
+  event=self._event(workflow,MigrationAuditEventType.STATUS_CHANGED,MigrationWorkflowStatus.MAPPING_APPROVED,MigrationWorkflowStatus.STAGING,actor_type,actor_reference,request_id,idempotency_key,attempt.claimed_at)
+  return self.repository.claim_transport_attempt(workflow_id,expected_version,attempt,event,idempotency_key=idempotency_key,request_hash=command_hash)
+ def mark_transport_running(self,attempt_id,running_at):return self.repository.mark_transport_running(attempt_id,running_at)
+ def complete_transport_attempt(self,workflow_id,expected_version,attempt_id,evidence:WorkflowTransportEvidence|None,new_status,*,completed_at,failure_category,idempotency_key,actor_type,actor_reference,request_id):
+  """Prepare optional staging evidence and atomically record the outcome."""
+
+  self._context(actor_type,actor_reference,request_id,idempotency_key);self._expected(expected_version);workflow=self.repository.get_workflow(workflow_id)
+  if workflow.version==expected_version and new_status not in ALLOWED_TRANSITIONS[workflow.status]:raise InvalidWorkflowTransitionError()
+  artifact=None;artifact_event=None
+  if evidence is not None:
+   self._validate_identity(workflow,WorkflowArtifactType.STAGING_LOAD_EVIDENCE,evidence)
+   try:data,digest=serialize_artifact(WorkflowArtifactType.STAGING_LOAD_EVIDENCE,evidence)
+   except (TypeError,ValueError):raise WorkflowArtifactValidationError() from None
+   artifact=WorkflowArtifact(artifact_id=self.uuid_factory(),workflow_id=workflow_id,artifact_type=WorkflowArtifactType.STAGING_LOAD_EVIDENCE,artifact_version=workflow.latest_artifact_version+1,schema_version=1,payload=data,payload_sha256=digest,created_at=completed_at)
+   artifact_event=self._event(workflow,MigrationAuditEventType.ARTIFACT_APPENDED,workflow.status,workflow.status,actor_type,actor_reference,request_id,idempotency_key,completed_at,artifact=artifact)
+  transition_event=self._event(workflow,MigrationAuditEventType.STATUS_CHANGED,workflow.status,new_status,actor_type,actor_reference,request_id,idempotency_key,completed_at)
+  return self.repository.complete_transport_attempt(workflow_id,expected_version,attempt_id,evidence,artifact,artifact_event,new_status,transition_event,completed_at=completed_at,failure_category=failure_category)
  def claim_execution_attempt(self,workflow_id,expected_version,attempt:MigrationExecutionAttempt,*,command_hash,idempotency_key,actor_type,actor_reference,request_id):
   """Validate execution eligibility and delegate the durable claim."""
 
@@ -171,6 +198,8 @@ class WorkflowPersistenceService:
   elif kind in {WorkflowArtifactType.MAPPING_PLAN,WorkflowArtifactType.APPROVED_MAPPING_PLAN}:
    source=WorkflowRelation(catalog_name=payload.source_table.catalog_name,schema_name=payload.source_table.schema_name,object_name=payload.source_table.table_name,system=payload.source_table.system);target=WorkflowRelation(catalog_name=payload.target_table.catalog_name,schema_name=payload.target_table.schema_name,object_name=payload.target_table.table_name,system=payload.target_table.system);valid=source==workflow.source_relation and target==workflow.target_relation
   elif kind is WorkflowArtifactType.TRANSFORMATION_PREVIEW:valid=tuple(x for x in (workflow.target_relation.catalog_name,workflow.target_relation.schema_name,workflow.target_relation.object_name))==payload.target_relation
+  elif kind is WorkflowArtifactType.STAGING_LOAD_EVIDENCE:
+   valid=(payload.workflow_id==workflow.workflow_id and payload.source_profile_id==workflow.source_profile_id and payload.target_profile_id==workflow.target_profile_id and (payload.source_relation.catalog_name,payload.source_relation.schema_name,payload.source_relation.object_name)==(workflow.source_relation.catalog_name,workflow.source_relation.schema_name,workflow.source_relation.object_name) and payload.staging_relation.catalog_name==workflow.target_relation.catalog_name and payload.staging_relation.schema_name==workflow.target_relation.schema_name and payload.staging_relation.object_name.startswith("SB_STAGE_"))
   elif kind is WorkflowArtifactType.EXECUTION_EVIDENCE:valid=payload.workflow_id==workflow.workflow_id and payload.target_profile_id==workflow.target_profile_id and payload.target_relation==tuple(x for x in (workflow.target_relation.catalog_name,workflow.target_relation.schema_name,workflow.target_relation.object_name))
   elif kind is WorkflowArtifactType.VALIDATION_PREVIEW:valid=payload[0].relation[-2:]==(workflow.source_relation.schema_name,workflow.source_relation.object_name) and payload[1].relation[-3:]==tuple(x for x in (workflow.target_relation.catalog_name,workflow.target_relation.schema_name,workflow.target_relation.object_name))
   elif kind is WorkflowArtifactType.VALIDATION_EXECUTION_REPORT:

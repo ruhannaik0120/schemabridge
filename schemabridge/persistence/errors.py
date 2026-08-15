@@ -50,3 +50,9 @@ class WorkflowValidationOutcomeUncertainError(WorkflowError):
     def __init__(self): super().__init__("The validation outcome requires manual investigation.")
 class WorkflowUnsafeValidationQueryError(WorkflowError):
     def __init__(self): super().__init__("The generated validation query is unsafe.")
+class WorkflowTransportAlreadyInProgressError(WorkflowError):
+    def __init__(self): super().__init__("Workflow staging transport is already in progress.")
+class WorkflowTransportConfirmedFailureError(WorkflowError):
+    def __init__(self): super().__init__("The staging load failed and was safely cleaned up.")
+class WorkflowTransportOutcomeUncertainError(WorkflowError):
+    def __init__(self): super().__init__("The staging load outcome requires manual investigation.")
