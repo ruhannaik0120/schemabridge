@@ -9,6 +9,7 @@ must not be persisted in the control plane.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
 from schemabridge.models.metadata import CanonicalType
 
@@ -149,7 +150,39 @@ class BatchWriteResult:
             raise ValueError("rows_written cannot exceed rows_received.")
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BatchTransportResult:
+    """Summarize a completed source-to-staging transfer without storing rows."""
+
+    transport_id: UUID
+    source_relation: TransportRelation
+    staging_relation: TransportRelation
+    batch_size: int
+    batch_count: int
+    column_count: int
+    rows_read: int
+    rows_written: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.transport_id, UUID):
+            raise TypeError("transport_id must be a UUID.")
+        if not isinstance(self.source_relation, TransportRelation):
+            raise TypeError("source_relation must be a TransportRelation.")
+        if not isinstance(self.staging_relation, TransportRelation):
+            raise TypeError("staging_relation must be a TransportRelation.")
+        _positive(self.batch_size, "batch_size")
+        _positive(self.batch_count, "batch_count", allow_zero=True)
+        _positive(self.column_count, "column_count")
+        _positive(self.rows_read, "rows_read", allow_zero=True)
+        _positive(self.rows_written, "rows_written", allow_zero=True)
+        if self.rows_read != self.rows_written:
+            raise ValueError("completed transport row counts must match.")
+        if (self.batch_count == 0) != (self.rows_read == 0):
+            raise ValueError("batch_count is inconsistent with transported rows.")
+
+
 __all__ = [
+    "BatchTransportResult",
     "BatchWriteResult",
     "DataBatch",
     "StagingColumn",
