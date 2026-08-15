@@ -790,6 +790,10 @@ def test_every_catalog_query_is_one_fixed_read_only_select():
         assert ";" not in query, name
         assert forbidden_statements.search(without_literals) is None, name
         assert "{" not in query and "}" not in query, name
+        psycopg_percent_tokens_removed = (
+            query.replace("%%", "").replace("%s", "").replace("%b", "").replace("%t", "")
+        )
+        assert "%" not in psycopg_percent_tokens_removed, name
     assert "c.relkind::text = ANY(%s::text[])" in queries._OBJECTS_QUERY
     assert '"char"[]' not in queries._OBJECTS_QUERY
 

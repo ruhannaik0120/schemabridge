@@ -128,7 +128,7 @@ SELECT
     coll.collname::text AS collation_name,
     (a.attidentity <> '') AS is_identity,
     CASE a.attidentity WHEN 'a' THEN 'ALWAYS' WHEN 'd' THEN 'BY DEFAULT' ELSE NULL END::text AS identity_generation,
-    (a.attidentity <> '' OR (ad.adbin IS NOT NULL AND pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) LIKE 'nextval(%')) AS is_auto_increment,
+    (a.attidentity <> '' OR (ad.adbin IS NOT NULL AND pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) LIKE 'nextval(%%')) AS is_auto_increment,
     (a.attgenerated <> '') AS is_generated,
     CASE WHEN a.attgenerated <> '' THEN pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) ELSE NULL END::text AS generation_expression,
     a.attndims::integer AS array_dimensions,
