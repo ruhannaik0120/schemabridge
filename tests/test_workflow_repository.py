@@ -69,7 +69,7 @@ def test_optional_real_postgresql_contract_in_an_isolated_schema():
  def connect():return psycopg.connect(dsn,autocommit=False,options=f'-c search_path={schema}')
  try:
   runner=ControlPlaneMigrationRunner(connect)
-  assert runner.run()==(1,2,3) and runner.run()==(1,2,3)
+  assert runner.run()==(1,2,3,4) and runner.run()==(1,2,3,4)
   inspection=connect()
   try:
    with inspection.cursor() as cursor:
@@ -79,9 +79,9 @@ def test_optional_real_postgresql_contract_in_an_isolated_schema():
     indexes={row[0] for row in cursor.fetchall()}
     cursor.execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE connamespace=current_schema()::regnamespace")
     constraints=' '.join(row[0] for row in cursor.fetchall())
-   assert {'schemabridge_control_plane_migrations','migration_workflows','migration_workflow_artifacts','migration_audit_events','migration_idempotency','migration_execution_attempts','migration_validation_runs'}<=tables
-   assert {'ux_migration_execution_active_fingerprint','ux_migration_validation_terminal','ix_migration_audit_workflow_sequence'}<=indexes
-   for value in ('EXECUTION_RECOVERY_REQUIRED','VALIDATION_REVIEW_REQUIRED','EXECUTION_EVIDENCE','OUTCOME_UNCERTAIN'):
+   assert {'schemabridge_control_plane_migrations','migration_workflows','migration_workflow_artifacts','migration_audit_events','migration_idempotency','migration_execution_attempts','migration_validation_runs','migration_transport_attempts'}<=tables
+   assert {'ux_migration_execution_active_fingerprint','ux_migration_validation_terminal','ux_migration_transport_active_fingerprint','ix_migration_audit_workflow_sequence'}<=indexes
+   for value in ('STAGED','STAGING_RECOVERY_REQUIRED','STAGING_LOAD_EVIDENCE','EXECUTION_RECOVERY_REQUIRED','VALIDATION_REVIEW_REQUIRED','EXECUTION_EVIDENCE','OUTCOME_UNCERTAIN'):
     assert value in constraints
   finally:inspection.close()
   repo=PostgreSQLWorkflowRepository(ControlPlaneConfig(dsn='[integration-test-dsn]'),connect=lambda _:connect())

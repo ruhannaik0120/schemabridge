@@ -73,6 +73,7 @@ The source PostgreSQL profile may be read-only. The Snowflake target profile mus
 The implemented states are:
 
 - planning: `DRAFT`, `DISCOVERED`, `MAPPING_PROPOSED`, `MAPPING_APPROVED`;
+- transport: `STAGING`, `STAGED`, `STAGING_RECOVERY_REQUIRED`;
 - execution: `EXECUTION_READY`, `EXECUTING`, `EXECUTED`, `EXECUTION_RECOVERY_REQUIRED`;
 - validation: `VALIDATION_READY`, `VALIDATING`, `VALIDATED`, `VALIDATION_REVIEW_REQUIRED`, `VALIDATION_RECOVERY_REQUIRED`;
 - administrative terminal states: `FAILED`, `CANCELLED`.
@@ -83,16 +84,17 @@ Transition rules are defined by `ALLOWED_TRANSITIONS` in `schemabridge/models/wo
 
 ## 9. Artifact types
 
-The workflow stores eight artifact types:
+The workflow recognizes nine artifact types:
 
 1. `SOURCE_DISCOVERY`
 2. `TARGET_DISCOVERY`
 3. `MAPPING_PLAN`
 4. `APPROVED_MAPPING_PLAN`
-5. `TRANSFORMATION_PREVIEW`
-6. `EXECUTION_EVIDENCE`
-7. `VALIDATION_PREVIEW`
-8. `VALIDATION_EXECUTION_REPORT`
+5. `STAGING_LOAD_EVIDENCE`
+6. `TRANSFORMATION_PREVIEW`
+7. `EXECUTION_EVIDENCE`
+8. `VALIDATION_PREVIEW`
+9. `VALIDATION_EXECUTION_REPORT`
 
 Artifacts use canonical JSON bytes, a schema version, a monotonically increasing artifact version, and a SHA-256 digest. Domain objects are rehydrated through `schemabridge/persistence/artifact_codec.py`.
 
@@ -167,7 +169,7 @@ A mismatch leads to `VALIDATION_REVIEW_REQUIRED`; it is not treated as proof tha
 - validation runs;
 - ordered audit events.
 
-Migrations `0001`, `0002`, and `0003` create and extend this model. Migration files are checksum-verified and applied explicitly by `scripts.migrate_control_plane`; application startup does not run migrations.
+Migrations `0001` through `0004` create and extend this model. Migration `0004` adds durable source-to-staging transport claims and evidence support. Migration files are checksum-verified and applied explicitly by `scripts.migrate_control_plane`; application startup does not run migrations.
 
 ## 18. Idempotency
 
@@ -210,7 +212,7 @@ Validation uses the same principle and enters `VALIDATION_RECOVERY_REQUIRED` whe
 ## 23. Known limitations
 
 - No live PostgreSQL-to-Snowflake data migration has been executed in the verified local environment.
-- There is no PostgreSQL extraction or Snowflake staging-load component.
+- PostgreSQL extraction and Snowflake staging-load components exist, but they are not yet connected to the durable HTTP workflow.
 - Validation compares aggregates rather than every row.
 - Production execution currently supports only Snowflake as the target.
 - There is no authentication or authorization layer around the HTTP API.

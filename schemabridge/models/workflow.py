@@ -24,6 +24,9 @@ class MigrationWorkflowStatus(str, Enum):
     DISCOVERED = "DISCOVERED"
     MAPPING_PROPOSED = "MAPPING_PROPOSED"
     MAPPING_APPROVED = "MAPPING_APPROVED"
+    STAGING = "STAGING"
+    STAGED = "STAGED"
+    STAGING_RECOVERY_REQUIRED = "STAGING_RECOVERY_REQUIRED"
     EXECUTION_READY = "EXECUTION_READY"
     EXECUTING = "EXECUTING"
     EXECUTED = "EXECUTED"
@@ -43,6 +46,7 @@ class WorkflowArtifactType(str, Enum):
     TARGET_DISCOVERY = "TARGET_DISCOVERY"
     MAPPING_PLAN = "MAPPING_PLAN"
     APPROVED_MAPPING_PLAN = "APPROVED_MAPPING_PLAN"
+    STAGING_LOAD_EVIDENCE = "STAGING_LOAD_EVIDENCE"
     TRANSFORMATION_PREVIEW = "TRANSFORMATION_PREVIEW"
     EXECUTION_EVIDENCE = "EXECUTION_EVIDENCE"
     VALIDATION_PREVIEW = "VALIDATION_PREVIEW"
@@ -169,7 +173,10 @@ ALLOWED_TRANSITIONS={
     MigrationWorkflowStatus.DRAFT:frozenset({MigrationWorkflowStatus.DISCOVERED,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
     MigrationWorkflowStatus.DISCOVERED:frozenset({MigrationWorkflowStatus.MAPPING_PROPOSED,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
     MigrationWorkflowStatus.MAPPING_PROPOSED:frozenset({MigrationWorkflowStatus.MAPPING_APPROVED,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
-    MigrationWorkflowStatus.MAPPING_APPROVED:frozenset({MigrationWorkflowStatus.EXECUTION_READY,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
+    MigrationWorkflowStatus.MAPPING_APPROVED:frozenset({MigrationWorkflowStatus.STAGING,MigrationWorkflowStatus.EXECUTION_READY,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
+    MigrationWorkflowStatus.STAGING:frozenset({MigrationWorkflowStatus.STAGED,MigrationWorkflowStatus.MAPPING_APPROVED,MigrationWorkflowStatus.STAGING_RECOVERY_REQUIRED}),
+    MigrationWorkflowStatus.STAGED:frozenset({MigrationWorkflowStatus.EXECUTION_READY,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
+    MigrationWorkflowStatus.STAGING_RECOVERY_REQUIRED:frozenset({MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
     MigrationWorkflowStatus.EXECUTION_READY:frozenset({MigrationWorkflowStatus.EXECUTING,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),
     MigrationWorkflowStatus.EXECUTING:frozenset({MigrationWorkflowStatus.EXECUTED,MigrationWorkflowStatus.EXECUTION_READY,MigrationWorkflowStatus.EXECUTION_RECOVERY_REQUIRED}),
     MigrationWorkflowStatus.EXECUTED:frozenset({MigrationWorkflowStatus.VALIDATION_READY,MigrationWorkflowStatus.VALIDATING,MigrationWorkflowStatus.FAILED,MigrationWorkflowStatus.CANCELLED}),

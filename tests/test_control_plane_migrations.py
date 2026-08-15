@@ -55,7 +55,7 @@ def test_execution_migration_extends_states_artifacts_and_attempt_integrity():
  assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))
 
 def test_migration_filenames_and_checksum_are_deterministic():
- runner=ControlPlaneMigrationRunner(lambda:None);items=runner.discover();assert [x[0] for x in items]==[1,2,3]
+ runner=ControlPlaneMigrationRunner(lambda:None);items=runner.discover();assert [x[0] for x in items]==[1,2,3,4]
  assert items[0][3]==hashlib.sha256(items[0][2]).hexdigest()
 
 def test_validation_migration_adds_durable_claims_and_review_states():
@@ -63,4 +63,14 @@ def test_validation_migration_adds_durable_claims_and_review_states():
  assert 'CREATE TABLE IF NOT EXISTS MIGRATION_VALIDATION_RUNS' in upper
  assert 'VALIDATION_REVIEW_REQUIRED' in upper and 'VALIDATION_RECOVERY_REQUIRED' in upper
  assert 'VALIDATE_WORKFLOW' in upper and 'DURATION_MS' in upper
+ assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))
+
+def test_transport_migration_adds_durable_claims_states_and_evidence():
+ text=(_MIGRATIONS/'0004_workflow_transport.sql').read_text(encoding='utf-8');upper=text.upper()
+ assert 'CREATE TABLE IF NOT EXISTS MIGRATION_TRANSPORT_ATTEMPTS' in upper
+ for value in ('STAGING','STAGED','STAGING_RECOVERY_REQUIRED','STAGING_LOAD_EVIDENCE','LOAD_STAGING'):
+  assert value in upper
+ assert 'UX_MIGRATION_TRANSPORT_ACTIVE_FINGERPRINT' in upper
+ assert 'REFERENCES MIGRATION_WORKFLOW_ARTIFACTS(WORKFLOW_ID, EVIDENCE_ARTIFACT_ID)' not in upper
+ assert 'REFERENCES MIGRATION_WORKFLOW_ARTIFACTS(WORKFLOW_ID, ARTIFACT_ID)' in upper
  assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))

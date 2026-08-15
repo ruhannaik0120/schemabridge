@@ -54,7 +54,7 @@ def test_migration_cli_discovers_all_versions_without_a_database() -> None:
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip().endswith("1, 2, 3")
+    assert completed.stdout.strip().endswith("1, 2, 3, 4")
     assert "postgresql://" not in completed.stdout + completed.stderr
 
 

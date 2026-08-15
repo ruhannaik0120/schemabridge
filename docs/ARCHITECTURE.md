@@ -114,7 +114,7 @@ Readiness does not prove that every external profile is reachable.
 
 ### Control-plane PostgreSQL
 
-The control plane stores product state. It contains workflows, artifact bytes and hashes, audit events, idempotency records, execution attempts, and validation runs. Its DSN is supplied through `SCHEMABRIDGE_CONTROL_PLANE_DSN`.
+The control plane stores product state. It contains workflows, artifact bytes and hashes, audit events, idempotency records, transport attempts, execution attempts, and validation runs. Its DSN is supplied through `SCHEMABRIDGE_CONTROL_PLANE_DSN`.
 
 It is not the migration source database. Keeping it separate lets SchemaBridge apply transactions, row locks, optimistic versions, and constraints to workflow state without mixing that state with customer data.
 

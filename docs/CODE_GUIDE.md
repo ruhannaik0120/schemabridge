@@ -291,6 +291,7 @@ Concrete connectors own driver-specific connection, discovery, execution, rollba
 - `schemabridge/persistence/migrations/0001_workflow_audit.sql` creates workflows, artifacts, audit events, and idempotency storage.
 - `0002_workflow_execution.sql` adds execution attempts and constraints.
 - `0003_workflow_validation.sql` adds validation runs and validation-related state support.
+- `0004_workflow_transport.sql` adds staging-load attempts, states, and evidence support.
 - `schemabridge/persistence/migrations.py` discovers files, verifies checksums, obtains an advisory lock, and applies pending migrations.
 - `scripts/migrate_control_plane.py` is the command-line entry point.
 - `Dockerfile` packages the FastAPI process using the pinned API dependency lock.

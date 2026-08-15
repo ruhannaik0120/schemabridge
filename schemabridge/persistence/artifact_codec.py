@@ -58,6 +58,8 @@ from schemabridge.models.validation import (
     ValidationStatus,
 )
 from schemabridge.models.workflow import WorkflowArtifact, WorkflowArtifactType
+from schemabridge.models.transport import TransportRelation
+from schemabridge.models.workflow_transport import WorkflowTransportEvidence
 from schemabridge.persistence.errors import WorkflowArtifactValidationError
 
 
@@ -303,6 +305,36 @@ def execution_evidence_from_artifact(
         raise WorkflowArtifactValidationError() from None
 
 
+def _transport_relation(value: object) -> TransportRelation:
+    return TransportRelation(**dict(_mapping(value)))
+
+
+def workflow_transport_evidence_from_artifact(
+    artifact: WorkflowArtifact,
+) -> WorkflowTransportEvidence:
+    """Decode successful row-free source-to-staging evidence."""
+
+    if artifact.artifact_type is not WorkflowArtifactType.STAGING_LOAD_EVIDENCE:
+        raise WorkflowArtifactValidationError()
+    try:
+        data = dict(_mapping(json.loads(artifact.payload.decode("utf-8"))))
+        data["attempt_id"] = UUID(data["attempt_id"])
+        data["workflow_id"] = UUID(data["workflow_id"])
+        data["source_relation"] = _transport_relation(data["source_relation"])
+        data["staging_relation"] = _transport_relation(data["staging_relation"])
+        data["started_at"] = datetime.fromisoformat(
+            str(data["started_at"]).replace("Z", "+00:00")
+        )
+        data["completed_at"] = datetime.fromisoformat(
+            str(data["completed_at"]).replace("Z", "+00:00")
+        )
+        return WorkflowTransportEvidence(**data)
+    except WorkflowArtifactValidationError:
+        raise
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        raise WorkflowArtifactValidationError() from None
+
+
 def _validation_check(value: object) -> ValidationCheckDefinition:
     data = dict(_mapping(value))
     data["check_type"] = ValidationCheckType(data["check_type"])
@@ -381,6 +413,7 @@ __all__ = [
     "mapping_plan_from_artifact",
     "table_metadata_from_artifact",
     "transformation_sql_from_artifact",
+    "workflow_transport_evidence_from_artifact",
     "validation_execution_report_from_artifact",
     "validation_preview_from_artifact",
 ]
