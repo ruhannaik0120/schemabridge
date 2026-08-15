@@ -156,6 +156,29 @@ def test_postgresql_commits_write_returning_rows(monkeypatch):
     assert result["rows"] == [{"id": 1}]
 
 
+def test_snowflake_dml_status_row_uses_affected_rowcount(monkeypatch):
+    _configure(monkeypatch, "snowflake")
+    connector = SnowflakeConnector()
+    connection = _WriteConnection()
+    connection.cursor_object.description = [("number of rows inserted",)]
+    connection.cursor_object.rowcount = 5
+    connection.cursor_object.fetchmany = lambda size: [(5,)]
+
+    @contextmanager
+    def fake_connection(*args, **kwargs):
+        yield connection
+
+    monkeypatch.setattr(connector, "_connection", fake_connection)
+
+    result = connector.execute_query(
+        "INSERT INTO target_table SELECT * FROM staging_table"
+    )
+
+    assert connection.committed is True
+    assert result["rows"] == [{"number of rows inserted": 5}]
+    assert result["rows_affected"] == 5
+
+
 def test_snowflake_execute_passes_statement_timeout(monkeypatch):
     _configure(monkeypatch, "snowflake")
     connector = SnowflakeConnector()

@@ -284,15 +284,17 @@ class SnowflakeConnector(DatabaseConnector):
         profile = self._profile()
         target_database = self._normalize_database(database, profile.database)
         limited_query = self._row_limit_sql(query, max_rows or profile.max_rows)
+        is_dml = re.match(r"(?is)^\s*(INSERT|UPDATE|DELETE|MERGE)\b", limited_query) is not None
         with self._connection(database=target_database or None, timeout_seconds=timeout_seconds) as conn:
             cursor = conn.cursor()
             try:
                 self._execute(cursor, limited_query, parameters, timeout_seconds=timeout_seconds)
                 payload = self._fetch_rows(cursor, max_rows or profile.max_rows)
-                rows_affected = cursor.rowcount if cursor.description is None else len(payload["rows"])
-                if cursor.description is None:
-                    # Commit explicitly so behavior remains consistent even if
-                    # Snowflake autocommit settings are changed by a profile.
+                rows_affected = cursor.rowcount if is_dml else len(payload["rows"])
+                if is_dml:
+                    # Snowflake can return a result row for DML. Commit based
+                    # on statement intent so profile autocommit settings do
+                    # not change migration behavior.
                     conn.commit()
             finally:
                 cursor.close()
