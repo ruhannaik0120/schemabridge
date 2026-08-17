@@ -8,9 +8,15 @@ operation described by a single method.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from schemabridge.models.migration_job import (
+    MigrationJob,
+    MigrationJobStage,
+    MigrationJobStatus,
+)
 from schemabridge.models.execution import (
     MigrationExecutionAttempt,
     MigrationExecutionEvidence,
@@ -46,6 +52,45 @@ class WorkflowRepository(Protocol):
 
     def get_workflow(self, workflow_id: UUID) -> MigrationWorkflow:
         """Load the current workflow or raise the repository not-found error."""
+
+        ...
+
+    def create_migration_job(
+        self, job: MigrationJob
+    ) -> tuple[MigrationJob, bool]:
+        """Create one queued job, or return its exact idempotent replay."""
+
+        ...
+
+    def get_migration_job(self, job_id: UUID) -> MigrationJob:
+        """Load one migration job or raise the job not-found error."""
+
+        ...
+
+    def claim_next_migration_job(self, started_at: datetime) -> MigrationJob | None:
+        """Atomically claim the oldest queued job, or return no available work."""
+
+        ...
+
+    def update_migration_job_stage(
+        self,
+        job_id: UUID,
+        expected_stage: MigrationJobStage,
+        new_stage: MigrationJobStage,
+    ) -> MigrationJob:
+        """Advance one running job by exactly one expected pipeline stage."""
+
+        ...
+
+    def finish_migration_job(
+        self,
+        job_id: UUID,
+        expected_stage: MigrationJobStage,
+        outcome: MigrationJobStatus,
+        completed_at: datetime,
+        failure_category: str | None,
+    ) -> MigrationJob:
+        """Atomically store one terminal job outcome and its timing evidence."""
 
         ...
 

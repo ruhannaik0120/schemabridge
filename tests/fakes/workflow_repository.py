@@ -3,15 +3,16 @@ from dataclasses import replace
 from threading import RLock
 
 from schemabridge.models.workflow import MigrationWorkflowStatus
+from schemabridge.models.migration_job import ALLOWED_JOB_STAGE_TRANSITIONS,MigrationJobStage,MigrationJobStatus
 from schemabridge.models.execution import MigrationExecutionAttemptStatus
 from schemabridge.models.workflow_transport import WorkflowTransportAttemptStatus
 from schemabridge.models.workflow_validation import WorkflowValidationRunStatus
-from schemabridge.persistence.errors import InvalidWorkflowTransitionError,WorkflowArtifactValidationError,WorkflowConflictError,WorkflowExecutionAlreadyInProgressError,WorkflowIdempotencyConflictError,WorkflowNotFoundError,WorkflowPersistenceError,WorkflowTransportAlreadyInProgressError,WorkflowValidationAlreadyInProgressError
+from schemabridge.persistence.errors import InvalidWorkflowTransitionError,MigrationJobAlreadyActiveError,MigrationJobNotFoundError,MigrationJobTransitionError,WorkflowArtifactValidationError,WorkflowConflictError,WorkflowExecutionAlreadyInProgressError,WorkflowIdempotencyConflictError,WorkflowNotFoundError,WorkflowOperationUnavailableError,WorkflowPersistenceError,WorkflowTransportAlreadyInProgressError,WorkflowValidationAlreadyInProgressError
 
 
 class InMemoryWorkflowRepository:
  def __init__(self):
-  self._workflows={};self._artifacts={};self._events={};self._commands={};self._transport_attempts={};self._attempts={};self._validation_runs={};self._lock=RLock();self.fail_audit=False;self.fail_idempotency=False
+  self._workflows={};self._artifacts={};self._events={};self._commands={};self._jobs={};self._transport_attempts={};self._attempts={};self._validation_runs={};self._lock=RLock();self.fail_audit=False;self.fail_idempotency=False
  def _replay(self,scope,key,digest):
   stored=self._commands.get((scope,key))
   if stored is None:return None
@@ -39,6 +40,52 @@ class InMemoryWorkflowRepository:
   with self._lock:
    try:return self._workflows[workflow_id]
    except KeyError:raise WorkflowNotFoundError() from None
+ def create_migration_job(self,job):
+  with self._lock:
+   scope=f"{job.workflow_id}:MIGRATION_JOB";replay=self._replay(scope,job.idempotency_key,job.job_fingerprint)
+   if replay is not None:return self._jobs[replay],False
+   workflow=self.get_workflow(job.workflow_id)
+   if workflow.version!=job.expected_workflow_version:raise WorkflowConflictError()
+   if workflow.status is not MigrationWorkflowStatus.MAPPING_APPROVED:raise WorkflowOperationUnavailableError()
+   active={MigrationJobStatus.QUEUED,MigrationJobStatus.RUNNING,MigrationJobStatus.SUCCEEDED,MigrationJobStatus.REVIEW_REQUIRED,MigrationJobStatus.RECOVERY_REQUIRED}
+   if any(item.workflow_id==job.workflow_id and item.status in active for item in self._jobs.values()):raise MigrationJobAlreadyActiveError()
+   snapshot=(dict(self._jobs),dict(self._commands))
+   try:
+    if job.job_id in self._jobs:raise WorkflowConflictError()
+    self._jobs[job.job_id]=job;self._store(scope,job.idempotency_key,job.job_fingerprint,job.job_id);return job,True
+   except Exception:
+    self._jobs,self._commands=snapshot;raise
+ def get_migration_job(self,job_id):
+  with self._lock:
+   try:return self._jobs[job_id]
+   except KeyError:raise MigrationJobNotFoundError() from None
+ def claim_next_migration_job(self,started_at):
+  with self._lock:
+   queued=[job for job in self._jobs.values() if job.status is MigrationJobStatus.QUEUED]
+   if not queued:return None
+   job=min(queued,key=lambda item:(item.queued_at,item.job_id.int))
+   claimed=replace(job,status=MigrationJobStatus.RUNNING,stage=MigrationJobStage.PREPARING,started_at=started_at)
+   self._jobs[job.job_id]=claimed;return claimed
+ def update_migration_job_stage(self,job_id,expected_stage,new_stage):
+  with self._lock:
+   job=self.get_migration_job(job_id)
+   valid=job.status is MigrationJobStatus.RUNNING and job.stage is expected_stage and new_stage is not MigrationJobStage.COMPLETED and new_stage in ALLOWED_JOB_STAGE_TRANSITIONS[job.stage]
+   if not valid:raise MigrationJobTransitionError()
+   updated=replace(job,stage=new_stage);self._jobs[job_id]=updated;return updated
+ def finish_migration_job(self,job_id,expected_stage,outcome,completed_at,failure_category):
+  with self._lock:
+   job=self.get_migration_job(job_id)
+   exact_success=outcome is MigrationJobStatus.SUCCEEDED and job.status is outcome and job.failure_category is None
+   exact_failure=outcome in {MigrationJobStatus.FAILED,MigrationJobStatus.REVIEW_REQUIRED,MigrationJobStatus.RECOVERY_REQUIRED} and job.status is outcome and job.stage is expected_stage and job.failure_category==failure_category
+   if exact_success or exact_failure:return job
+   valid_outcome=outcome in {MigrationJobStatus.SUCCEEDED,MigrationJobStatus.FAILED,MigrationJobStatus.REVIEW_REQUIRED,MigrationJobStatus.RECOVERY_REQUIRED}
+   valid_success=outcome is MigrationJobStatus.SUCCEEDED and job.stage is MigrationJobStage.VALIDATING and expected_stage is MigrationJobStage.VALIDATING and failure_category is None
+   valid_failure=outcome in {MigrationJobStatus.FAILED,MigrationJobStatus.REVIEW_REQUIRED,MigrationJobStatus.RECOVERY_REQUIRED} and job.stage is expected_stage and failure_category is not None
+   if job.status is not MigrationJobStatus.RUNNING or not valid_outcome or not (valid_success or valid_failure) or job.started_at is None or completed_at<job.started_at:raise MigrationJobTransitionError()
+   duration=max(0,int((completed_at-job.started_at).total_seconds()*1000))
+   try:updated=replace(job,status=outcome,stage=MigrationJobStage.COMPLETED if outcome is MigrationJobStatus.SUCCEEDED else job.stage,completed_at=completed_at,duration_ms=duration,failure_category=failure_category)
+   except (TypeError,ValueError):raise MigrationJobTransitionError() from None
+   self._jobs[job_id]=updated;return updated
  def transition_status(self,workflow_id,expected_version,new_status,event,*,last_error_code,idempotency_key,request_hash):
   if event.workflow_id!=workflow_id:raise WorkflowPersistenceError()
   with self._lock:

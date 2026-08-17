@@ -58,3 +58,9 @@ class WorkflowTransportOutcomeUncertainError(WorkflowError):
     def __init__(self): super().__init__("The staging load outcome requires manual investigation.")
 class WorkflowStagingCleanupError(WorkflowError):
     def __init__(self): super().__init__("The committed migration's managed staging table could not be cleaned up.")
+class MigrationJobNotFoundError(WorkflowError):
+    def __init__(self): super().__init__("The migration job is unavailable.")
+class MigrationJobAlreadyActiveError(WorkflowError):
+    def __init__(self): super().__init__("The workflow already has an active migration job.")
+class MigrationJobTransitionError(WorkflowError):
+    def __init__(self): super().__init__("The migration job stage transition is invalid.")
