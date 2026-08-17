@@ -2,13 +2,29 @@
 
 from __future__ import annotations
 
-from schemabridge.api.schemas.jobs import MigrationJobSchema
+from schemabridge.api.schemas.jobs import (
+    MigrationJobBatchProgressSchema,
+    MigrationJobSchema,
+)
 from schemabridge.models.migration_job import MigrationJob
 
 
 def migration_job_to_api(value: MigrationJob) -> MigrationJobSchema:
     """Copy only the explicitly declared safe job fields into the API model."""
 
+    progress = (
+        MigrationJobBatchProgressSchema(
+            batches_completed=value.batch_progress.batches_completed,
+            rows_read=value.batch_progress.rows_read,
+            rows_written=value.batch_progress.rows_written,
+            total_rows_estimate=value.batch_progress.total_rows_estimate,
+            estimated_percent_complete=(
+                value.batch_progress.estimated_percent_complete
+            ),
+        )
+        if value.batch_progress is not None
+        else None
+    )
     return MigrationJobSchema(
         job_id=value.job_id,
         workflow_id=value.workflow_id,
@@ -30,6 +46,8 @@ def migration_job_to_api(value: MigrationJob) -> MigrationJobSchema:
         completed_at=value.completed_at,
         duration_ms=value.duration_ms,
         failure_category=value.failure_category,
+        batch_progress=progress,
+        progress_updated_at=value.progress_updated_at,
     )
 
 

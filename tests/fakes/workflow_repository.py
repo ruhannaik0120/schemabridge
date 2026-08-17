@@ -72,6 +72,16 @@ class InMemoryWorkflowRepository:
    valid=job.status is MigrationJobStatus.RUNNING and job.stage is expected_stage and new_stage is not MigrationJobStage.COMPLETED and new_stage in ALLOWED_JOB_STAGE_TRANSITIONS[job.stage]
    if not valid:raise MigrationJobTransitionError()
    updated=replace(job,stage=new_stage);self._jobs[job_id]=updated;return updated
+ def update_migration_job_progress(self,job_id,progress,updated_at):
+  with self._lock:
+   job=self.get_migration_job(job_id);previous=job.batch_progress
+   valid=job.status is MigrationJobStatus.RUNNING and job.stage is MigrationJobStage.STAGING and job.started_at is not None and updated_at>=job.started_at and progress.batches_completed>0 and progress.rows_read>0
+   if previous is not None:
+    valid=valid and job.progress_updated_at is not None and updated_at>job.progress_updated_at and progress.batches_completed>previous.batches_completed and progress.rows_read>previous.rows_read and progress.rows_written>previous.rows_written and progress.total_rows_estimate==previous.total_rows_estimate
+   if not valid:raise MigrationJobTransitionError()
+   try:updated=replace(job,batch_progress=progress,progress_updated_at=updated_at)
+   except (TypeError,ValueError,AttributeError):raise MigrationJobTransitionError() from None
+   self._jobs[job_id]=updated;return updated
  def finish_migration_job(self,job_id,expected_stage,outcome,completed_at,failure_category):
   with self._lock:
    job=self.get_migration_job(job_id)

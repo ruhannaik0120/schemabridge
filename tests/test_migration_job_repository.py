@@ -11,6 +11,7 @@ from schemabridge.models.migration_job import (
     MigrationJobStage,
     MigrationJobStatus,
 )
+from schemabridge.models.transport import BatchTransportProgress
 from schemabridge.models.workflow import (
     AuditActorType,
     MigrationWorkflow,
@@ -258,6 +259,75 @@ def test_progress_cannot_mark_completion_or_advance_an_unclaimed_job() -> None:
         )
 
 
+def _progress(batches=1, rows=500, estimate=1_200):
+    return BatchTransportProgress(
+        batches_completed=batches,
+        rows_read=rows,
+        rows_written=rows,
+        total_rows_estimate=estimate,
+    )
+
+
+def test_batch_progress_is_durable_and_strictly_monotonic() -> None:
+    repository = _repository()
+    repository._jobs[JOB_ID] = replace(
+        _job(),
+        status=MigrationJobStatus.RUNNING,
+        stage=MigrationJobStage.STAGING,
+        started_at=NOW,
+    )
+
+    first = repository.update_migration_job_progress(
+        JOB_ID, _progress(), NOW + timedelta(seconds=1)
+    )
+    second = repository.update_migration_job_progress(
+        JOB_ID, _progress(batches=2, rows=1_000), NOW + timedelta(seconds=2)
+    )
+
+    assert first.batch_progress == _progress()
+    assert second == repository.get_migration_job(JOB_ID)
+    assert second.batch_progress == _progress(batches=2, rows=1_000)
+    assert second.progress_updated_at == NOW + timedelta(seconds=2)
+
+
+@pytest.mark.parametrize(
+    "progress,updated_at",
+    [
+        (_progress(), NOW + timedelta(seconds=2)),
+        (_progress(batches=2, rows=1_000), NOW),
+        (_progress(batches=2, rows=1_000, estimate=1_300), NOW + timedelta(seconds=2)),
+    ],
+)
+def test_batch_progress_rejects_replay_old_time_and_changed_estimate(progress, updated_at) -> None:
+    repository = _repository()
+    repository._jobs[JOB_ID] = replace(
+        _job(),
+        status=MigrationJobStatus.RUNNING,
+        stage=MigrationJobStage.STAGING,
+        started_at=NOW,
+        batch_progress=_progress(),
+        progress_updated_at=NOW + timedelta(seconds=1),
+    )
+
+    with pytest.raises(MigrationJobTransitionError):
+        repository.update_migration_job_progress(JOB_ID, progress, updated_at)
+
+
+def test_batch_progress_requires_a_running_staging_job() -> None:
+    repository = _repository()
+    repository._jobs[JOB_ID] = replace(
+        _job(),
+        status=MigrationJobStatus.RUNNING,
+        stage=MigrationJobStage.PREPARING,
+        started_at=NOW,
+    )
+
+    with pytest.raises(MigrationJobTransitionError):
+        repository.update_migration_job_progress(
+            JOB_ID, _progress(), NOW + timedelta(seconds=1)
+        )
+
+
 def test_successful_finish_is_atomic_timed_and_exactly_replayable() -> None:
     repository = _repository()
     running = replace(
@@ -403,6 +473,11 @@ def _job_row(job=None):
         job.completed_at,
         job.duration_ms,
         job.failure_category,
+        job.batch_progress.batches_completed if job.batch_progress else 0,
+        job.batch_progress.rows_read if job.batch_progress else 0,
+        job.batch_progress.rows_written if job.batch_progress else 0,
+        job.batch_progress.total_rows_estimate if job.batch_progress else None,
+        job.progress_updated_at,
     )
 
 
@@ -654,6 +729,52 @@ def test_postgresql_stage_progress_rejects_a_skipped_stage() -> None:
             JOB_ID,
             MigrationJobStage.PREPARING,
             MigrationJobStage.EXECUTING,
+        )
+
+    assert len(cursor.calls) == 1
+
+
+def test_postgresql_batch_progress_locks_and_updates_all_metrics() -> None:
+    running = replace(
+        _job(),
+        status=MigrationJobStatus.RUNNING,
+        stage=MigrationJobStage.STAGING,
+        started_at=NOW,
+    )
+    cursor = ClaimCursor(_job_row(running))
+    connection = CreateConnection(cursor)
+    repository = PostgreSQLWorkflowRepository(
+        ControlPlaneConfig(dsn="secret-dsn"), connect=lambda _dsn: connection
+    )
+    updated_at = NOW + timedelta(seconds=1)
+
+    updated = repository.update_migration_job_progress(JOB_ID, _progress(), updated_at)
+
+    assert updated.batch_progress == _progress()
+    assert updated.progress_updated_at == updated_at
+    assert "FOR UPDATE" in cursor.calls[0][0]
+    assert cursor.calls[1][1] == (1, 500, 500, 1_200, updated_at, JOB_ID)
+    assert connection.closed is True
+
+
+def test_postgresql_batch_progress_rejects_a_duplicate_snapshot_without_update() -> None:
+    running = replace(
+        _job(),
+        status=MigrationJobStatus.RUNNING,
+        stage=MigrationJobStage.STAGING,
+        started_at=NOW,
+        batch_progress=_progress(),
+        progress_updated_at=NOW + timedelta(seconds=1),
+    )
+    cursor = ClaimCursor(_job_row(running))
+    repository = PostgreSQLWorkflowRepository(
+        ControlPlaneConfig(dsn="secret-dsn"),
+        connect=lambda _dsn: CreateConnection(cursor),
+    )
+
+    with pytest.raises(MigrationJobTransitionError):
+        repository.update_migration_job_progress(
+            JOB_ID, _progress(), NOW + timedelta(seconds=2)
         )
 
     assert len(cursor.calls) == 1

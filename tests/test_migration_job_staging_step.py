@@ -12,6 +12,7 @@ from schemabridge.services.migration_job_pipeline import MigrationJobStagingStep
 from schemabridge.services.migration_jobs import (
     MigrationJobClaimService,
     MigrationJobCompletionService,
+    MigrationJobProgressService,
     MigrationJobSubmissionService,
 )
 from schemabridge.services.workflow_persistence import WorkflowPersistenceService
@@ -74,10 +75,20 @@ def _context(disposition, *, mutate_workflow=False, claim=True):
         persistence,
         clock=lambda: queued_at + timedelta(seconds=20),
     )
+    progress_times = iter(
+        (
+            queued_at + timedelta(seconds=2),
+            queued_at + timedelta(seconds=3),
+        )
+    )
     step = MigrationJobStagingStep(
         persistence,
         _orchestrator(repository, transport),
         completion_service=completion,
+        progress_service=MigrationJobProgressService(
+            persistence,
+            clock=lambda: next(progress_times),
+        ),
     )
     return step, claimed, repository, transport, workflow_id
 
@@ -96,6 +107,12 @@ def test_success_moves_real_transport_result_into_transforming_stage() -> None:
     assert result.transport.evidence.rows_read == 3
     assert result.transport.evidence.rows_written == 3
     assert result.transport.evidence.batch_count == 2
+    assert result.job.batch_progress is not None
+    assert result.job.batch_progress.batches_completed == 2
+    assert result.job.batch_progress.rows_read == 3
+    assert result.job.batch_progress.rows_written == 3
+    assert result.job.batch_progress.estimated_percent_complete == 100
+    assert result.job.progress_updated_at is not None
     assert result.transport.evidence.staging_relation.object_name.startswith("SB_STAGE_")
     assert repository.get_workflow(workflow_id).status is MigrationWorkflowStatus.STAGED
     assert len(transport.prepare_calls) == len(transport.run_calls) == 1

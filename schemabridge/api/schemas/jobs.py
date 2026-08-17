@@ -19,6 +19,7 @@ from .workflows import ActorReference, ProfileId
 JobBatchSize = Annotated[int, Field(strict=True, gt=0, le=10_000)]
 Fingerprint = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 IdempotencyKey = Annotated[str, StringConstraints(min_length=1, max_length=128)]
+Percentage = Annotated[int, Field(strict=True, ge=0, le=100)]
 
 
 class MigrationJobCreateRequest(ApiSchema):
@@ -31,6 +32,16 @@ class MigrationJobCreateRequest(ApiSchema):
     timeout_seconds: PositiveInt
     actor_type: AuditActorType = AuditActorType.USER
     actor_reference: ActorReference | None = None
+
+
+class MigrationJobBatchProgressSchema(ApiSchema):
+    """Expose safe cumulative counts without exposing transported row values."""
+
+    batches_completed: NonNegativeInt
+    rows_read: NonNegativeInt
+    rows_written: NonNegativeInt
+    total_rows_estimate: NonNegativeInt | None
+    estimated_percent_complete: Percentage | None
 
 
 class MigrationJobSchema(ApiSchema):
@@ -56,6 +67,8 @@ class MigrationJobSchema(ApiSchema):
     completed_at: datetime | None
     duration_ms: NonNegativeInt | None
     failure_category: SafeCode | None
+    batch_progress: MigrationJobBatchProgressSchema | None = None
+    progress_updated_at: datetime | None = None
 
 
 class MigrationJobCreateResponse(ApiSchema):
@@ -68,5 +81,6 @@ class MigrationJobCreateResponse(ApiSchema):
 __all__ = [
     "MigrationJobCreateRequest",
     "MigrationJobCreateResponse",
+    "MigrationJobBatchProgressSchema",
     "MigrationJobSchema",
 ]
