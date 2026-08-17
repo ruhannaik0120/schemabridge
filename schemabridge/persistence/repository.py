@@ -17,6 +17,7 @@ from schemabridge.models.migration_job import (
     MigrationJobStage,
     MigrationJobStatus,
 )
+from schemabridge.models.transport import BatchTransportProgress
 from schemabridge.models.execution import (
     MigrationExecutionAttempt,
     MigrationExecutionEvidence,
@@ -79,6 +80,16 @@ class WorkflowRepository(Protocol):
         new_stage: MigrationJobStage,
     ) -> MigrationJob:
         """Advance one running job by exactly one expected pipeline stage."""
+
+        ...
+
+    def update_migration_job_progress(
+        self,
+        job_id: UUID,
+        progress: BatchTransportProgress,
+        updated_at: datetime,
+    ) -> MigrationJob:
+        """Store one strictly newer cumulative staging-progress snapshot."""
 
         ...
 

@@ -55,7 +55,7 @@ def test_execution_migration_extends_states_artifacts_and_attempt_integrity():
  assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))
 
 def test_migration_filenames_and_checksum_are_deterministic():
- runner=ControlPlaneMigrationRunner(lambda:None);items=runner.discover();assert [x[0] for x in items]==[1,2,3,4,5,6,7,8]
+ runner=ControlPlaneMigrationRunner(lambda:None);items=runner.discover();assert [x[0] for x in items]==[1,2,3,4,5,6,7,8,9]
  assert items[0][3]==hashlib.sha256(items[0][2]).hexdigest()
 
 def test_cleanup_migration_extends_artifact_constraints():
@@ -114,3 +114,12 @@ def test_job_review_status_migration_preserves_manual_review_boundary():
  assert 'UX_MIGRATION_JOBS_ACTIVE_FINGERPRINT' in upper
  assert 'UX_MIGRATION_JOBS_ONE_ACTIVE_WORKFLOW' in upper
  assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))
+
+def test_job_progress_migration_adds_database_neutral_cumulative_counts():
+ text=(_MIGRATIONS/'0009_migration_job_batch_progress.sql').read_text(encoding='utf-8');upper=text.upper()
+ for value in ('BATCHES_COMPLETED','ROWS_READ','ROWS_WRITTEN','TOTAL_ROWS_ESTIMATE','PROGRESS_UPDATED_AT'):
+  assert value in upper
+ assert 'MIGRATION_JOBS_BATCH_PROGRESS_CHECK' in upper
+ assert 'ROWS_READ = ROWS_WRITTEN' in upper
+ assert all(vendor not in text.casefold() for vendor in ('postgresql','mysql','snowflake','sqlserver','databricks'))
+ assert all(secret not in text.casefold() for secret in ('password','private_key','access_token','postgresql://'))

@@ -15,6 +15,7 @@ from uuid import UUID
 
 from schemabridge.models.discovery import TableMetadata
 from schemabridge.models.transport import (
+    BatchTransportProgress,
     BatchTransportResult,
     BatchWriteResult,
     DataBatch,
@@ -23,6 +24,8 @@ from schemabridge.models.transport import (
     TransportRelation,
 )
 from schemabridge.transport.base import (
+    BatchProgressReporter,
+    BatchProgressReportingError,
     BatchSourceReader,
     BatchTransportError,
     StagingTableWriter,
@@ -41,13 +44,22 @@ class BatchTransportService:
         *,
         source_reader: BatchSourceReader,
         staging_writer: StagingTableWriter,
+        progress_reporter: BatchProgressReporter | None = None,
     ) -> None:
         if not isinstance(source_reader, BatchSourceReader):
             raise TypeError("source_reader must implement BatchSourceReader.")
         if not isinstance(staging_writer, StagingTableWriter):
             raise TypeError("staging_writer must implement StagingTableWriter.")
+        if progress_reporter is not None and not isinstance(
+            progress_reporter,
+            BatchProgressReporter,
+        ):
+            raise TypeError(
+                "progress_reporter must implement BatchProgressReporter."
+            )
         self.source_reader = source_reader
         self.staging_writer = staging_writer
+        self.progress_reporter = progress_reporter
 
     @staticmethod
     def _positive(value: int, name: str) -> None:
@@ -172,6 +184,20 @@ class BatchTransportService:
             batch_count += 1
             rows_read += batch.row_count
             rows_written += written.rows_written
+            if self.progress_reporter is not None:
+                try:
+                    self.progress_reporter.report(
+                        BatchTransportProgress(
+                            batches_completed=batch_count,
+                            rows_read=rows_read,
+                            rows_written=rows_written,
+                            total_rows_estimate=source_table.estimated_row_count,
+                        )
+                    )
+                except Exception:
+                    raise BatchProgressReportingError(
+                        "Completed-batch progress reporting failed."
+                    ) from None
 
         return BatchTransportResult(
             transport_id=transport_id,
@@ -321,6 +347,7 @@ class ProfileBoundBatchTransportService:
         source_table: TableMetadata,
         target_database: str,
         target_schema: str,
+        progress_reporter: BatchProgressReporter | None = None,
     ) -> ProfileBoundBatchTransportResult:
         """Run once and prove cleanup before classifying a failure as retryable."""
 
@@ -333,6 +360,7 @@ class ProfileBoundBatchTransportService:
             result = BatchTransportService(
                 source_reader=prepared.source_reader,
                 staging_writer=prepared.staging_writer,
+                progress_reporter=progress_reporter,
             ).transfer(
                 transport_id=transport_id,
                 source_table=source_table,
@@ -345,7 +373,7 @@ class ProfileBoundBatchTransportService:
                 disposition=BatchTransportDisposition.SUCCEEDED,
                 result=result,
             )
-        except Exception:
+        except Exception as error:
             # A failed remote call does not prove whether the staging system
             # accepted a batch. A successful DROP proves the managed staging
             # table is gone, making a later deliberate retry safe.
@@ -361,7 +389,11 @@ class ProfileBoundBatchTransportService:
                 )
             return ProfileBoundBatchTransportResult(
                 disposition=BatchTransportDisposition.CONFIRMED_FAILED_CLEANED_UP,
-                failure_category="STAGING_LOAD_FAILED",
+                failure_category=(
+                    "PROGRESS_REPORTING_FAILED"
+                    if isinstance(error, BatchProgressReportingError)
+                    else "STAGING_LOAD_FAILED"
+                ),
             )
 
 

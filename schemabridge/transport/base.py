@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from typing import Protocol, runtime_checkable
 
 from schemabridge.models.transport import (
+    BatchTransportProgress,
     BatchWriteResult,
     DataBatch,
     StagingTableDefinition,
@@ -29,6 +30,10 @@ class UnsupportedStagingTypeError(BatchTransportError):
     """Raised when a source type cannot be represented in staging without guessing."""
 
 
+class BatchProgressReportingError(BatchTransportError):
+    """Raised when completed-batch progress cannot be recorded safely."""
+
+
 @runtime_checkable
 class BatchSourceReader(Protocol):
     """Read a relation incrementally without loading it all into memory."""
@@ -41,6 +46,13 @@ class BatchSourceReader(Protocol):
         batch_size: int,
         timeout_seconds: int,
     ) -> Iterator[DataBatch]: ...
+
+
+@runtime_checkable
+class BatchProgressReporter(Protocol):
+    """Receive cumulative progress after each completely written batch."""
+
+    def report(self, progress: BatchTransportProgress) -> None: ...
 
 
 @runtime_checkable
@@ -71,6 +83,8 @@ class StagingTableWriter(Protocol):
 
 
 __all__ = [
+    "BatchProgressReportingError",
+    "BatchProgressReporter",
     "BatchSourceReader",
     "BatchTransportConnectionError",
     "BatchTransportError",

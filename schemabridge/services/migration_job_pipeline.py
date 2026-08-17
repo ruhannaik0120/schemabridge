@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
 from schemabridge.models.migration_job import (
     MigrationJob,
@@ -10,6 +11,7 @@ from schemabridge.models.migration_job import (
     MigrationJobStatus,
 )
 from schemabridge.models.mapping import TransformationStatementType
+from schemabridge.models.transport import BatchTransportProgress
 from schemabridge.models.validation import MigrationValidationStatus
 from schemabridge.models.workflow import (
     AuditActorType,
@@ -73,6 +75,17 @@ class MigrationJobStagingResult:
     transport: WorkflowTransportResult | None
 
 
+@dataclass(frozen=True, slots=True)
+class _MigrationJobBatchProgressReporter:
+    """Bind transport callbacks to one durable background job."""
+
+    job_id: UUID
+    progress_service: MigrationJobProgressService
+
+    def report(self, progress: BatchTransportProgress) -> None:
+        self.progress_service.record_batch(self.job_id, progress)
+
+
 class MigrationJobStagingStep:
     """Verify a claimed job and run its connector-neutral staging transport."""
 
@@ -82,10 +95,11 @@ class MigrationJobStagingStep:
         transport_orchestrator: WorkflowTransportOrchestrator,
         *,
         completion_service: MigrationJobCompletionService,
+        progress_service: MigrationJobProgressService | None = None,
     ) -> None:
         self.persistence = persistence
         self.transport_orchestrator = transport_orchestrator
-        self.progress = MigrationJobProgressService(persistence)
+        self.progress = progress_service or MigrationJobProgressService(persistence)
         self.completion = completion_service
 
     def _prepare(self, job: MigrationJob) -> None:
@@ -170,6 +184,10 @@ class MigrationJobStagingStep:
                 idempotency_key=self._staging_key(job),
                 actor_type=AuditActorType.SERVICE,
                 actor_reference="migration-job-worker",
+                progress_reporter=_MigrationJobBatchProgressReporter(
+                    job_id=job.job_id,
+                    progress_service=self.progress,
+                ),
             )
         except WorkflowTransportConfirmedFailureError:
             failed = self.completion.fail(

@@ -49,6 +49,7 @@ class WorkflowPersistenceService:
  def get_migration_job(self,job_id):return self.repository.get_migration_job(job_id)
  def claim_next_migration_job(self,started_at):return self.repository.claim_next_migration_job(started_at)
  def update_migration_job_stage(self,job_id,expected_stage,new_stage):return self.repository.update_migration_job_stage(job_id,expected_stage,new_stage)
+ def update_migration_job_progress(self,job_id,progress,updated_at):return self.repository.update_migration_job_progress(job_id,progress,updated_at)
  def finish_migration_job(self,job_id,expected_stage,outcome,completed_at,failure_category):return self.repository.finish_migration_job(job_id,expected_stage,outcome,completed_at,failure_category)
  def list_artifacts(self,workflow_id,*,offset=0,limit=100):return self.repository.list_artifacts(workflow_id,offset=offset,limit=limit)
  def get_artifact(self,workflow_id,artifact_version):return self.repository.get_artifact(workflow_id,artifact_version)

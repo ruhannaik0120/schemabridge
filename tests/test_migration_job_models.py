@@ -6,6 +6,7 @@ from uuid import UUID
 
 import pytest
 
+from schemabridge.models.transport import BatchTransportProgress
 from schemabridge.models.migration_job import (
     ALLOWED_JOB_STAGE_TRANSITIONS,
     MigrationJob,
@@ -141,3 +142,82 @@ def test_job_rejects_invalid_hash_and_non_utc_timestamp() -> None:
         _job(job_fingerprint="not-a-hash")
     with pytest.raises(ValueError, match="UTC"):
         _job(queued_at=datetime(2026, 8, 16))
+
+
+def test_running_staging_job_can_hold_one_coherent_progress_snapshot() -> None:
+    progress = BatchTransportProgress(
+        batches_completed=2,
+        rows_read=4,
+        rows_written=4,
+        total_rows_estimate=5,
+    )
+    job = replace(
+        _job(),
+        status=MigrationJobStatus.RUNNING,
+        stage=MigrationJobStage.STAGING,
+        started_at=NOW + timedelta(seconds=1),
+        batch_progress=progress,
+        progress_updated_at=NOW + timedelta(seconds=2),
+    )
+
+    assert job.batch_progress == progress
+    assert job.batch_progress.estimated_percent_complete == 80
+
+
+def test_job_requires_progress_value_and_timestamp_to_appear_together() -> None:
+    progress = BatchTransportProgress(
+        batches_completed=1,
+        rows_read=2,
+        rows_written=2,
+    )
+
+    with pytest.raises(ValueError, match="appear together"):
+        _job(batch_progress=progress)
+    with pytest.raises(ValueError, match="appear together"):
+        _job(progress_updated_at=NOW)
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [MigrationJobStage.QUEUED, MigrationJobStage.PREPARING],
+)
+def test_job_rejects_batch_progress_before_staging(stage) -> None:
+    progress = BatchTransportProgress(
+        batches_completed=1,
+        rows_read=2,
+        rows_written=2,
+    )
+
+    with pytest.raises(ValueError, match="timing or stage"):
+        _job(
+            status=(
+                MigrationJobStatus.QUEUED
+                if stage is MigrationJobStage.QUEUED
+                else MigrationJobStatus.RUNNING
+            ),
+            stage=stage,
+            started_at=(
+                None
+                if stage is MigrationJobStage.QUEUED
+                else NOW + timedelta(seconds=1)
+            ),
+            batch_progress=progress,
+            progress_updated_at=NOW + timedelta(seconds=2),
+        )
+
+
+def test_job_rejects_progress_timestamp_before_job_start() -> None:
+    progress = BatchTransportProgress(
+        batches_completed=1,
+        rows_read=2,
+        rows_written=2,
+    )
+
+    with pytest.raises(ValueError, match="timing or stage"):
+        _job(
+            status=MigrationJobStatus.RUNNING,
+            stage=MigrationJobStage.STAGING,
+            started_at=NOW + timedelta(seconds=2),
+            batch_progress=progress,
+            progress_updated_at=NOW + timedelta(seconds=1),
+        )

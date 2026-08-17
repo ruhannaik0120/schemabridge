@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from uuid import UUID
 
+from schemabridge.models.transport import BatchTransportProgress
 from schemabridge.models.workflow import AuditActorType
 
 
@@ -98,6 +99,8 @@ class MigrationJob:
     completed_at: datetime | None = None
     duration_ms: int | None = None
     failure_category: str | None = None
+    batch_progress: BatchTransportProgress | None = None
+    progress_updated_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.job_id, UUID) or not isinstance(self.workflow_id, UUID):
@@ -123,6 +126,7 @@ class MigrationJob:
         _utc(self.queued_at, "queued_at")
         _utc(self.started_at, "started_at", required=False)
         _utc(self.completed_at, "completed_at", required=False)
+        _utc(self.progress_updated_at, "progress_updated_at", required=False)
         if self.started_at is not None and self.started_at < self.queued_at:
             raise ValueError("started_at precedes queued_at.")
         if self.completed_at is not None and (
@@ -142,6 +146,32 @@ class MigrationJob:
             _text(self.actor_reference, "actor_reference")
         if self.failure_category is not None and not _CODE.fullmatch(self.failure_category):
             raise ValueError("failure_category is invalid.")
+        if self.batch_progress is not None and not isinstance(
+            self.batch_progress,
+            BatchTransportProgress,
+        ):
+            raise TypeError("batch_progress is invalid.")
+        if (self.batch_progress is None) != (self.progress_updated_at is None):
+            raise ValueError("batch progress and its timestamp must appear together.")
+        if self.batch_progress is not None:
+            progress_stages = {
+                MigrationJobStage.STAGING,
+                MigrationJobStage.TRANSFORMING,
+                MigrationJobStage.EXECUTING,
+                MigrationJobStage.CLEANING_UP,
+                MigrationJobStage.VALIDATING,
+                MigrationJobStage.COMPLETED,
+            }
+            if (
+                self.stage not in progress_stages
+                or self.started_at is None
+                or self.progress_updated_at < self.started_at
+                or (
+                    self.completed_at is not None
+                    and self.progress_updated_at > self.completed_at
+                )
+            ):
+                raise ValueError("batch progress timing or stage is inconsistent.")
 
         if self.status is MigrationJobStatus.QUEUED:
             valid = (

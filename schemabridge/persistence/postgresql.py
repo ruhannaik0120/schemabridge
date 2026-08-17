@@ -8,12 +8,12 @@ collapsed to persistence-domain errors before leaving this boundary.
 from __future__ import annotations
 import json
 from dataclasses import replace
-from datetime import timezone
+from datetime import datetime,timezone
 from uuid import UUID
 from schemabridge.models.migration_job import ALLOWED_JOB_STAGE_TRANSITIONS,MigrationJob,MigrationJobStage,MigrationJobStatus
 from schemabridge.models.execution import MigrationExecutionAttempt,MigrationExecutionAttemptStatus
 from schemabridge.models.workflow_validation import WorkflowValidationRun,WorkflowValidationRunStatus
-from schemabridge.models.transport import TransportRelation
+from schemabridge.models.transport import BatchTransportProgress,TransportRelation
 from schemabridge.models.workflow_transport import WorkflowTransportAttempt,WorkflowTransportAttemptStatus,WorkflowTransportEvidence
 from schemabridge.models.workflow import *
 from schemabridge.persistence.config import ControlPlaneConfig
@@ -26,7 +26,7 @@ _EVENT_COLUMNS="sequence_number,event_id,workflow_id,event_type,previous_status,
 _ATT_COLUMNS="attempt_id,workflow_id,approved_mapping_artifact_version,transformation_preview_artifact_version,target_profile_id,execution_fingerprint,status,timeout_seconds,claimed_at,actor_type,idempotency_key,actor_reference,running_at,completed_at,evidence_artifact_id,failure_category"
 _VAL_COLUMNS="run_id,workflow_id,execution_attempt_id,execution_evidence_artifact_version,approved_mapping_artifact_version,validation_preview_artifact_version,source_profile_id,target_profile_id,validation_fingerprint,status,timeout_seconds,claimed_at,actor_type,idempotency_key,actor_reference,running_at,completed_at,duration_ms,evidence_artifact_id,failure_category"
 _TRANS_COLUMNS="attempt_id,workflow_id,source_discovery_artifact_version,approved_mapping_artifact_version,source_profile_id,target_profile_id,staging_relation,batch_size,timeout_seconds,transport_fingerprint,status,claimed_at,actor_type,idempotency_key,actor_reference,running_at,completed_at,evidence_artifact_id,failure_category"
-_JOB_COLUMNS="job_id,workflow_id,expected_workflow_version,source_discovery_artifact_version,approved_mapping_artifact_version,source_profile_id,target_profile_id,batch_size,timeout_seconds,job_fingerprint,status,stage,queued_at,actor_type,idempotency_key,actor_reference,started_at,completed_at,duration_ms,failure_category"
+_JOB_COLUMNS="job_id,workflow_id,expected_workflow_version,source_discovery_artifact_version,approved_mapping_artifact_version,source_profile_id,target_profile_id,batch_size,timeout_seconds,job_fingerprint,status,stage,queued_at,actor_type,idempotency_key,actor_reference,started_at,completed_at,duration_ms,failure_category,batches_completed,rows_read,rows_written,total_rows_estimate,progress_updated_at"
 
 class PostgreSQLWorkflowRepository:
  """Persist workflow control-plane records with transactional guarantees."""
@@ -74,7 +74,8 @@ class PostgreSQLWorkflowRepository:
   return WorkflowTransportAttempt(attempt_id=row[0],workflow_id=row[1],source_discovery_artifact_version=row[2],approved_mapping_artifact_version=row[3],source_profile_id=row[4],target_profile_id=row[5],staging_relation=TransportRelation(**relation),batch_size=row[7],timeout_seconds=row[8],transport_fingerprint=row[9],status=WorkflowTransportAttemptStatus(row[10]),claimed_at=row[11].astimezone(timezone.utc),actor_type=AuditActorType(row[12]),idempotency_key=row[13],actor_reference=row[14],running_at=row[15].astimezone(timezone.utc) if row[15] else None,completed_at=row[16].astimezone(timezone.utc) if row[16] else None,evidence_artifact_id=row[17],failure_category=row[18])
  @staticmethod
  def _migration_job(row):
-  return MigrationJob(job_id=row[0],workflow_id=row[1],expected_workflow_version=row[2],source_discovery_artifact_version=row[3],approved_mapping_artifact_version=row[4],source_profile_id=row[5],target_profile_id=row[6],batch_size=row[7],timeout_seconds=row[8],job_fingerprint=row[9],status=MigrationJobStatus(row[10]),stage=MigrationJobStage(row[11]),queued_at=row[12].astimezone(timezone.utc),actor_type=AuditActorType(row[13]),idempotency_key=row[14],actor_reference=row[15],started_at=row[16].astimezone(timezone.utc) if row[16] else None,completed_at=row[17].astimezone(timezone.utc) if row[17] else None,duration_ms=row[18],failure_category=row[19])
+  progress=BatchTransportProgress(batches_completed=row[20],rows_read=row[21],rows_written=row[22],total_rows_estimate=row[23]) if row[24] else None
+  return MigrationJob(job_id=row[0],workflow_id=row[1],expected_workflow_version=row[2],source_discovery_artifact_version=row[3],approved_mapping_artifact_version=row[4],source_profile_id=row[5],target_profile_id=row[6],batch_size=row[7],timeout_seconds=row[8],job_fingerprint=row[9],status=MigrationJobStatus(row[10]),stage=MigrationJobStage(row[11]),queued_at=row[12].astimezone(timezone.utc),actor_type=AuditActorType(row[13]),idempotency_key=row[14],actor_reference=row[15],started_at=row[16].astimezone(timezone.utc) if row[16] else None,completed_at=row[17].astimezone(timezone.utc) if row[17] else None,duration_ms=row[18],failure_category=row[19],batch_progress=progress,progress_updated_at=row[24].astimezone(timezone.utc) if row[24] else None)
  def _idem(self,cursor,scope,key,digest):
   """Serialize one idempotency scope and return its recorded result if present."""
 
@@ -138,7 +139,7 @@ class PostgreSQLWorkflowRepository:
      if workflow.status is not MigrationWorkflowStatus.MAPPING_APPROVED:raise WorkflowOperationUnavailableError()
      cursor.execute("SELECT 1 FROM migration_jobs WHERE workflow_id=%s AND status IN ('QUEUED','RUNNING','SUCCEEDED','REVIEW_REQUIRED','RECOVERY_REQUIRED') LIMIT 1",(job.workflow_id,))
      if cursor.fetchone() is not None:raise MigrationJobAlreadyActiveError()
-     cursor.execute(f"INSERT INTO migration_jobs({_JOB_COLUMNS}) VALUES ({','.join(['%s']*20)})",(job.job_id,job.workflow_id,job.expected_workflow_version,job.source_discovery_artifact_version,job.approved_mapping_artifact_version,job.source_profile_id,job.target_profile_id,job.batch_size,job.timeout_seconds,job.job_fingerprint,job.status.value,job.stage.value,job.queued_at,job.actor_type.value,job.idempotency_key,job.actor_reference,job.started_at,job.completed_at,job.duration_ms,job.failure_category))
+     cursor.execute(f"INSERT INTO migration_jobs({_JOB_COLUMNS}) VALUES ({','.join(['%s']*25)})",(job.job_id,job.workflow_id,job.expected_workflow_version,job.source_discovery_artifact_version,job.approved_mapping_artifact_version,job.source_profile_id,job.target_profile_id,job.batch_size,job.timeout_seconds,job.job_fingerprint,job.status.value,job.stage.value,job.queued_at,job.actor_type.value,job.idempotency_key,job.actor_reference,job.started_at,job.completed_at,job.duration_ms,job.failure_category,0,0,0,None,None))
      self._insert_idem(cursor,scope,job.idempotency_key,"CREATE_MIGRATION_JOB",job.job_fingerprint,job.workflow_id,job.job_id,job.queued_at)
      return job,True
   except WorkflowError:raise
@@ -187,6 +188,29 @@ class PostgreSQLWorkflowRepository:
      cursor.execute("UPDATE migration_jobs SET stage=%s WHERE job_id=%s AND status='RUNNING' AND stage=%s",(new_stage.value,job_id,expected_stage.value))
      if cursor.rowcount!=1:raise MigrationJobTransitionError()
      return replace(job,stage=new_stage)
+  except WorkflowError:raise
+  except Exception:raise WorkflowPersistenceError() from None
+  finally:self._close(connection)
+ def update_migration_job_progress(self,job_id,progress,updated_at):
+  """Persist a strictly newer cumulative snapshot while staging is running."""
+
+  if not isinstance(progress,BatchTransportProgress) or not isinstance(updated_at,datetime) or updated_at.tzinfo is None or updated_at.utcoffset()!=timezone.utc.utcoffset(updated_at):raise MigrationJobTransitionError()
+  connection=self._open()
+  try:
+   with connection.transaction():
+    with connection.cursor() as cursor:
+     cursor.execute(f"SELECT {_JOB_COLUMNS} FROM migration_jobs WHERE job_id=%s FOR UPDATE",(job_id,));row=cursor.fetchone()
+     if row is None:raise MigrationJobNotFoundError()
+     job=self._migration_job(row);previous=job.batch_progress
+     valid=job.status is MigrationJobStatus.RUNNING and job.stage is MigrationJobStage.STAGING and job.started_at is not None and updated_at>=job.started_at and progress.batches_completed>0 and progress.rows_read>0
+     if previous is not None:
+      valid=valid and job.progress_updated_at is not None and updated_at>job.progress_updated_at and progress.batches_completed>previous.batches_completed and progress.rows_read>previous.rows_read and progress.rows_written>previous.rows_written and progress.total_rows_estimate==previous.total_rows_estimate
+     if not valid:raise MigrationJobTransitionError()
+     try:updated=replace(job,batch_progress=progress,progress_updated_at=updated_at)
+     except (TypeError,ValueError):raise MigrationJobTransitionError() from None
+     cursor.execute("UPDATE migration_jobs SET batches_completed=%s,rows_read=%s,rows_written=%s,total_rows_estimate=%s,progress_updated_at=%s WHERE job_id=%s AND status='RUNNING' AND stage='STAGING'",(progress.batches_completed,progress.rows_read,progress.rows_written,progress.total_rows_estimate,updated_at,job_id))
+     if cursor.rowcount!=1:raise MigrationJobTransitionError()
+     return updated
   except WorkflowError:raise
   except Exception:raise WorkflowPersistenceError() from None
   finally:self._close(connection)

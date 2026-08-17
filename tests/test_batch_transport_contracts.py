@@ -6,13 +6,18 @@ import pytest
 
 from schemabridge.models.metadata import CanonicalType
 from schemabridge.models.transport import (
+    BatchTransportProgress,
     BatchWriteResult,
     DataBatch,
     StagingColumn,
     StagingTableDefinition,
     TransportRelation,
 )
-from schemabridge.transport.base import BatchSourceReader, StagingTableWriter
+from schemabridge.transport.base import (
+    BatchProgressReporter,
+    BatchSourceReader,
+    StagingTableWriter,
+)
 
 
 RELATION = TransportRelation(
@@ -93,6 +98,64 @@ def test_batch_write_result_cannot_claim_more_rows_than_received() -> None:
         BatchWriteResult(batch_number=1, rows_received=5, rows_written=6)
 
 
+def test_batch_progress_is_cumulative_immutable_and_database_neutral() -> None:
+    progress = BatchTransportProgress(
+        batches_completed=3,
+        rows_read=5,
+        rows_written=5,
+        total_rows_estimate=10,
+    )
+
+    assert progress.estimated_percent_complete == 50
+    assert not hasattr(progress, "source_database")
+    assert not hasattr(progress, "target_database")
+    with pytest.raises(FrozenInstanceError):
+        progress.rows_read = 6  # type: ignore[misc]
+
+
+def test_batch_progress_handles_unknown_and_inexact_source_estimates() -> None:
+    unknown = BatchTransportProgress(
+        batches_completed=1,
+        rows_read=2,
+        rows_written=2,
+    )
+    underestimated = BatchTransportProgress(
+        batches_completed=2,
+        rows_read=5,
+        rows_written=5,
+        total_rows_estimate=4,
+    )
+    empty = BatchTransportProgress(
+        batches_completed=0,
+        rows_read=0,
+        rows_written=0,
+        total_rows_estimate=0,
+    )
+
+    assert unknown.estimated_percent_complete is None
+    assert underestimated.estimated_percent_complete == 100
+    assert empty.estimated_percent_complete == 100
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"batches_completed": 1, "rows_read": 2, "rows_written": 1},
+        {"batches_completed": 0, "rows_read": 1, "rows_written": 1},
+        {"batches_completed": 1, "rows_read": 0, "rows_written": 0},
+        {
+            "batches_completed": 0,
+            "rows_read": 0,
+            "rows_written": 0,
+            "total_rows_estimate": -1,
+        },
+    ],
+)
+def test_batch_progress_rejects_impossible_snapshots(kwargs: object) -> None:
+    with pytest.raises(ValueError):
+        BatchTransportProgress(**kwargs)  # type: ignore[arg-type]
+
+
 def test_structural_contracts_do_not_require_connector_inheritance() -> None:
     class Reader:
         def read_batches(self, **kwargs):
@@ -108,5 +171,10 @@ def test_structural_contracts_do_not_require_connector_inheritance() -> None:
         def drop_staging_table(self, **kwargs):
             return None
 
+    class Reporter:
+        def report(self, progress):
+            return None
+
     assert isinstance(Reader(), BatchSourceReader)
     assert isinstance(Writer(), StagingTableWriter)
+    assert isinstance(Reporter(), BatchProgressReporter)

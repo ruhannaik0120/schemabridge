@@ -151,6 +151,41 @@ class BatchWriteResult:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class BatchTransportProgress:
+    """Describe cumulative completed-batch progress without naming a database."""
+
+    batches_completed: int
+    rows_read: int
+    rows_written: int
+    total_rows_estimate: int | None = None
+
+    def __post_init__(self) -> None:
+        _positive(self.batches_completed, "batches_completed", allow_zero=True)
+        _positive(self.rows_read, "rows_read", allow_zero=True)
+        _positive(self.rows_written, "rows_written", allow_zero=True)
+        if self.total_rows_estimate is not None:
+            _positive(
+                self.total_rows_estimate,
+                "total_rows_estimate",
+                allow_zero=True,
+            )
+        if self.rows_read != self.rows_written:
+            raise ValueError("completed progress row counts must match.")
+        if (self.batches_completed == 0) != (self.rows_read == 0):
+            raise ValueError("batch progress is inconsistent with completed rows.")
+
+    @property
+    def estimated_percent_complete(self) -> int | None:
+        """Return a bounded estimate, or None when no source total is known."""
+
+        if self.total_rows_estimate is None:
+            return None
+        if self.total_rows_estimate == 0:
+            return 100
+        return min(100, (self.rows_read * 100) // self.total_rows_estimate)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class BatchTransportResult:
     """Summarize a completed source-to-staging transfer without storing rows."""
 
@@ -182,6 +217,7 @@ class BatchTransportResult:
 
 
 __all__ = [
+    "BatchTransportProgress",
     "BatchTransportResult",
     "BatchWriteResult",
     "DataBatch",

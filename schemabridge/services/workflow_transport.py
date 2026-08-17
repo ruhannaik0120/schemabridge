@@ -40,6 +40,7 @@ from schemabridge.services.batch_transport import (
     ProfileBoundBatchTransportResult,
 )
 from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.transport.base import BatchProgressReporter
 
 
 def _now() -> datetime:
@@ -233,6 +234,7 @@ class WorkflowTransportOrchestrator:
         actor_type: AuditActorType = AuditActorType.USER,
         actor_reference: str | None = None,
         request_id: str | None = None,
+        progress_reporter: BatchProgressReporter | None = None,
     ) -> WorkflowTransportResult:
         """Execute one exact idempotent source-to-managed-staging command."""
 
@@ -343,6 +345,7 @@ class WorkflowTransportOrchestrator:
                 source_table=source_table,
                 target_database=workflow.target_relation.catalog_name,
                 target_schema=workflow.target_relation.schema_name,
+                progress_reporter=progress_reporter,
             )
         except Exception:
             # Once RUNNING has been stored, an unexpected exception cannot prove

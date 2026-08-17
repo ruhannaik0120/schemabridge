@@ -15,7 +15,11 @@ from schemabridge.models.discovery import (
     TableMetadata,
 )
 from schemabridge.models.metadata import CanonicalType, ColumnMetadata
-from schemabridge.models.transport import BatchWriteResult, DataBatch
+from schemabridge.models.transport import (
+    BatchTransportProgress,
+    BatchWriteResult,
+    DataBatch,
+)
 from schemabridge.models.transport import TransportRelation
 from schemabridge.services.batch_transport import (
     BatchTransportDisposition,
@@ -54,7 +58,7 @@ def _column(
     )
 
 
-def _table() -> TableMetadata:
+def _table(*, estimated_row_count: int | None = None) -> TableMetadata:
     coverage = DiscoveryCoverage(
         columns=CoverageStatus.COMPLETE,
         primary_key=CoverageStatus.COMPLETE,
@@ -86,6 +90,7 @@ def _table() -> TableMetadata:
             _column("full_name", 2, CanonicalType.STRING, nullable=True),
         ),
         coverage=coverage,
+        estimated_row_count=estimated_row_count,
         vendor_metadata={},
     )
 
@@ -123,8 +128,24 @@ class Writer:
         self.drops.append(kwargs)
 
 
-def _service(reader: Reader, writer: Writer) -> BatchTransportService:
-    return BatchTransportService(source_reader=reader, staging_writer=writer)
+class ProgressRecorder:
+    def __init__(self) -> None:
+        self.snapshots: list[BatchTransportProgress] = []
+
+    def report(self, progress: BatchTransportProgress) -> None:
+        self.snapshots.append(progress)
+
+
+def _service(
+    reader: Reader,
+    writer: Writer,
+    reporter: ProgressRecorder | None = None,
+) -> BatchTransportService:
+    return BatchTransportService(
+        source_reader=reader,
+        staging_writer=writer,
+        progress_reporter=reporter,
+    )
 
 
 def test_transfer_prepares_staging_moves_batches_and_returns_only_counts() -> None:
@@ -187,6 +208,74 @@ def test_empty_source_still_prepares_an_empty_staging_table() -> None:
     assert len(writer.prepared) == 1
     assert writer.writes == []
     assert result.batch_count == result.rows_read == result.rows_written == 0
+
+
+def test_transfer_reports_cumulative_progress_after_each_completed_batch() -> None:
+    batches = (
+        DataBatch(
+            batch_number=1,
+            column_names=("customer_id", "full_name"),
+            rows=((1, "Asha"), (2, "Rahul")),
+        ),
+        DataBatch(
+            batch_number=2,
+            column_names=("customer_id", "full_name"),
+            rows=((3, "Neha"),),
+        ),
+    )
+    reporter = ProgressRecorder()
+
+    _service(Reader(batches), Writer(), reporter).transfer(
+        transport_id=TRANSPORT_ID,
+        source_table=_table(estimated_row_count=3),
+        target_database="SCHEMABRIDGE_LAB",
+        target_schema="PUBLIC",
+        batch_size=2,
+        timeout_seconds=10,
+    )
+
+    assert reporter.snapshots == [
+        BatchTransportProgress(
+            batches_completed=1,
+            rows_read=2,
+            rows_written=2,
+            total_rows_estimate=3,
+        ),
+        BatchTransportProgress(
+            batches_completed=2,
+            rows_read=3,
+            rows_written=3,
+            total_rows_estimate=3,
+        ),
+    ]
+    assert [
+        item.estimated_percent_complete for item in reporter.snapshots
+    ] == [66, 100]
+
+
+def test_transfer_does_not_report_a_batch_before_writer_confirmation() -> None:
+    class FailingWriter(Writer):
+        def write_batch(self, **kwargs):
+            raise BatchTransportError("safe failure")
+
+    reporter = ProgressRecorder()
+    batch = DataBatch(
+        batch_number=1,
+        column_names=("customer_id", "full_name"),
+        rows=((1, "Asha"),),
+    )
+
+    with pytest.raises(BatchTransportError):
+        _service(Reader((batch,)), FailingWriter(), reporter).transfer(
+            transport_id=TRANSPORT_ID,
+            source_table=_table(estimated_row_count=1),
+            target_database="SCHEMABRIDGE_LAB",
+            target_schema="PUBLIC",
+            batch_size=2,
+            timeout_seconds=10,
+        )
+
+    assert reporter.snapshots == []
 
 
 @pytest.mark.parametrize(
@@ -471,6 +560,81 @@ def test_profile_bound_run_confirms_cleanup_before_allowing_retry() -> None:
     )
 
     assert result.disposition is BatchTransportDisposition.CONFIRMED_FAILED_CLEANED_UP
+    assert len(writer.drops) == 1
+
+
+def test_profile_bound_run_forwards_database_neutral_progress() -> None:
+    batches = (
+        DataBatch(
+            batch_number=1,
+            column_names=("customer_id", "full_name"),
+            rows=((1, "Asha"), (2, "Rahul")),
+        ),
+        DataBatch(
+            batch_number=2,
+            column_names=("customer_id", "full_name"),
+            rows=((3, "Neha"),),
+        ),
+    )
+    writer = Writer()
+    reporter = ProgressRecorder()
+    prepared = SimpleNamespace(
+        source_profile_id="source",
+        target_profile_id="target",
+        source_reader=Reader(batches),
+        staging_writer=writer,
+        batch_size=2,
+        timeout_seconds=10,
+    )
+
+    result = ProfileBoundBatchTransportService.run(
+        prepared,
+        transport_id=TRANSPORT_ID,
+        source_table=_table(estimated_row_count=3),
+        target_database="SCHEMABRIDGE_LAB",
+        target_schema="PUBLIC",
+        progress_reporter=reporter,
+    )
+
+    assert result.disposition is BatchTransportDisposition.SUCCEEDED
+    assert [item.rows_written for item in reporter.snapshots] == [2, 3]
+    assert [
+        item.estimated_percent_complete for item in reporter.snapshots
+    ] == [66, 100]
+
+
+def test_profile_bound_run_cleans_staging_when_progress_reporting_fails() -> None:
+    class BrokenReporter:
+        def report(self, progress):
+            raise RuntimeError("control plane unavailable")
+
+    batch = DataBatch(
+        batch_number=1,
+        column_names=("customer_id", "full_name"),
+        rows=((1, "Asha"),),
+    )
+    writer = Writer()
+    prepared = SimpleNamespace(
+        source_profile_id="source",
+        target_profile_id="target",
+        source_reader=Reader((batch,)),
+        staging_writer=writer,
+        batch_size=2,
+        timeout_seconds=10,
+    )
+
+    result = ProfileBoundBatchTransportService.run(
+        prepared,
+        transport_id=TRANSPORT_ID,
+        source_table=_table(estimated_row_count=1),
+        target_database="SCHEMABRIDGE_LAB",
+        target_schema="PUBLIC",
+        progress_reporter=BrokenReporter(),
+    )
+
+    assert result.disposition is BatchTransportDisposition.CONFIRMED_FAILED_CLEANED_UP
+    assert result.failure_category == "PROGRESS_REPORTING_FAILED"
+    assert len(writer.writes) == 1
     assert len(writer.drops) == 1
 
 

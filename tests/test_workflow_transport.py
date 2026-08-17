@@ -13,7 +13,11 @@ from schemabridge.api.dependencies import (
     get_batch_transport_service,
     get_migration_execution_service,
 )
-from schemabridge.models.transport import BatchTransportResult, TransportRelation
+from schemabridge.models.transport import (
+    BatchTransportProgress,
+    BatchTransportResult,
+    TransportRelation,
+)
 from schemabridge.models.workflow import MigrationWorkflowStatus
 from schemabridge.persistence.errors import (
     WorkflowStaleArtifactReferenceError,
@@ -67,6 +71,24 @@ class FakeTransport:
                     is BatchTransportDisposition.CONFIRMED_FAILED_CLEANED_UP
                     else "STAGING_OUTCOME_UNCERTAIN"
                 ),
+            )
+        reporter = kwargs.get("progress_reporter")
+        if reporter is not None:
+            reporter.report(
+                BatchTransportProgress(
+                    batches_completed=1,
+                    rows_read=2,
+                    rows_written=2,
+                    total_rows_estimate=3,
+                )
+            )
+            reporter.report(
+                BatchTransportProgress(
+                    batches_completed=2,
+                    rows_read=3,
+                    rows_written=3,
+                    total_rows_estimate=3,
+                )
             )
         source = kwargs["source_table"]
         return ProfileBoundBatchTransportResult(

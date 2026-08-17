@@ -11,6 +11,7 @@ from schemabridge.models.migration_job import (
     MigrationJobStage,
     MigrationJobStatus,
 )
+from schemabridge.models.transport import BatchTransportProgress
 from schemabridge.models.workflow import (
     AuditActorType,
     MigrationWorkflowStatus,
@@ -154,10 +155,16 @@ class MigrationJobClaimService:
 
 
 class MigrationJobProgressService:
-    """Advance a claimed job through one safe non-terminal stage at a time."""
+    """Store trusted stage and batch progress for one claimed job."""
 
-    def __init__(self, persistence: WorkflowPersistenceService) -> None:
+    def __init__(
+        self,
+        persistence: WorkflowPersistenceService,
+        *,
+        clock: Callable[[], datetime] = _now,
+    ) -> None:
         self.persistence = persistence
+        self.clock = clock
 
     def advance(
         self,
@@ -170,6 +177,19 @@ class MigrationJobProgressService:
             job_id,
             expected_stage,
             new_stage,
+        )
+
+    def record_batch(
+        self,
+        job_id: UUID,
+        progress: BatchTransportProgress,
+    ) -> MigrationJob:
+        """Persist one connector-neutral snapshot after a confirmed batch write."""
+
+        return self.persistence.update_migration_job_progress(
+            job_id,
+            progress,
+            self.clock(),
         )
 
 
