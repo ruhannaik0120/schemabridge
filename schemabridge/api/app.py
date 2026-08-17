@@ -101,6 +101,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     # keeps package import and OpenAPI inspection independent of database
     # drivers, profiles, and live connections.
     from .routes.migrations import router as migrations_router
+    from .routes.jobs import router as jobs_router
     from .routes.workflows import router as workflows_router
 
     app = FastAPI(
@@ -112,6 +113,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         openapi_tags=[
             {"name": "health", "description": "Operational health checks."},
             {"name": "migrations", "description": "Versioned migration workflows."},
+            {"name": "migration-jobs", "description": "Durable background migration work orders."},
         ],
         responses={
             422: {"model": ErrorResponse, "description": "Request validation failed."},
@@ -126,6 +128,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(migrations_router)
     app.include_router(workflows_router)
+    app.include_router(jobs_router)
     return app
 
 

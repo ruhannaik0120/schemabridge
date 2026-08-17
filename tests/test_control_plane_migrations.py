@@ -55,7 +55,7 @@ def test_execution_migration_extends_states_artifacts_and_attempt_integrity():
  assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))
 
 def test_migration_filenames_and_checksum_are_deterministic():
- runner=ControlPlaneMigrationRunner(lambda:None);items=runner.discover();assert [x[0] for x in items]==[1,2,3,4,5]
+ runner=ControlPlaneMigrationRunner(lambda:None);items=runner.discover();assert [x[0] for x in items]==[1,2,3,4,5,6,7,8]
  assert items[0][3]==hashlib.sha256(items[0][2]).hexdigest()
 
 def test_cleanup_migration_extends_artifact_constraints():
@@ -84,4 +84,33 @@ def test_transport_migration_adds_durable_claims_states_and_evidence():
  assert 'UX_MIGRATION_TRANSPORT_ACTIVE_FINGERPRINT' in upper
  assert 'REFERENCES MIGRATION_WORKFLOW_ARTIFACTS(WORKFLOW_ID, EVIDENCE_ARTIFACT_ID)' not in upper
  assert 'REFERENCES MIGRATION_WORKFLOW_ARTIFACTS(WORKFLOW_ID, ARTIFACT_ID)' in upper
+ assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))
+
+def test_background_job_migration_adds_durable_jobs_and_integrity_rules():
+ text=(_MIGRATIONS/'0006_background_migration_jobs.sql').read_text(encoding='utf-8');upper=text.upper()
+ assert 'CREATE TABLE IF NOT EXISTS MIGRATION_JOBS' in upper
+ assert 'REFERENCES MIGRATION_WORKFLOWS(WORKFLOW_ID)' in upper
+ assert 'CREATE_MIGRATION_JOB' in upper
+ for value in ('QUEUED','RUNNING','SUCCEEDED','FAILED','RECOVERY_REQUIRED'):
+  assert value in upper
+ for value in ('PREPARING','STAGING','TRANSFORMING','EXECUTING','CLEANING_UP','VALIDATING','COMPLETED'):
+  assert value in upper
+ assert 'UX_MIGRATION_JOBS_ACTIVE_FINGERPRINT' in upper
+ assert 'UNIQUE(WORKFLOW_ID, IDEMPOTENCY_KEY)' in upper
+ assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))
+
+def test_single_active_job_migration_protects_each_workflow():
+ text=(_MIGRATIONS/'0007_single_active_migration_job.sql').read_text(encoding='utf-8');upper=text.upper()
+ assert 'UX_MIGRATION_JOBS_ONE_ACTIVE_WORKFLOW' in upper
+ assert 'ON MIGRATION_JOBS(WORKFLOW_ID)' in upper
+ for value in ('QUEUED','RUNNING','SUCCEEDED','RECOVERY_REQUIRED'):
+  assert value in upper
+
+def test_job_review_status_migration_preserves_manual_review_boundary():
+ text=(_MIGRATIONS/'0008_migration_job_review_status.sql').read_text(encoding='utf-8');upper=text.upper()
+ assert 'REVIEW_REQUIRED' in upper
+ assert 'MIGRATION_JOBS_STATUS_CHECK' in upper
+ assert 'MIGRATION_JOBS_CHECK2' in upper
+ assert 'UX_MIGRATION_JOBS_ACTIVE_FINGERPRINT' in upper
+ assert 'UX_MIGRATION_JOBS_ONE_ACTIVE_WORKFLOW' in upper
  assert all(word not in text.casefold() for word in ('password','private_key','access_token','postgresql://'))

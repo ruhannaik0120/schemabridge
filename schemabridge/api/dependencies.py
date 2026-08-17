@@ -137,6 +137,16 @@ def get_workflow_persistence_service(repository=Depends(get_workflow_repository)
     return WorkflowPersistenceService(repository)
 
 
+def get_migration_job_submission_service(
+    persistence=Depends(get_workflow_persistence_service),
+):
+    """Build the service that validates and records queued migration jobs."""
+
+    from schemabridge.services.migration_jobs import MigrationJobSubmissionService
+
+    return MigrationJobSubmissionService(persistence)
+
+
 def get_workflow_planning_orchestrator(
     persistence=Depends(get_workflow_persistence_service),
     discovery_resolver=Depends(get_schema_discovery_service),
@@ -220,6 +230,7 @@ REQUIRED_DEPENDENCY_HOOKS = (
     build_workflow_repository,
     get_workflow_repository,
     get_workflow_persistence_service,
+    get_migration_job_submission_service,
     get_workflow_planning_orchestrator,
     get_workflow_execution_orchestrator,
     get_workflow_transport_orchestrator,
