@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -19,12 +20,20 @@ from schemabridge.models.discovery import (
     ObjectPersistence,
     TableMetadata,
 )
-from schemabridge.models.transport import DataBatch, TransportRelation
+from schemabridge.models.transport import (
+    BatchWriteResult,
+    DataBatch,
+    StagingColumn,
+    StagingTableDefinition,
+    TransportRelation,
+)
+from schemabridge.models.metadata import CanonicalType
 from schemabridge.normalizers.mysql import normalize_mysql_column
 from schemabridge.transport.base import (
     BatchTransportConnectionError,
     BatchTransportError,
     BatchTransportTimeoutError,
+    UnsupportedStagingTypeError,
 )
 from schemabridge.connectors.discovery import (
     SchemaDiscoveryConnectionError,
@@ -180,6 +189,182 @@ class MySQLConnector(DatabaseConnector):
         if connection_phase or errno in {2002, 2003, 2005, 2006, 2013}:
             raise SchemaDiscoveryConnectionError("Schema discovery connection failed.") from None
         raise SchemaDiscoveryError("Schema discovery failed.") from None
+
+    def _require_staging_write_profile(self) -> ConnectionConfig | ConnectionProfile:
+        """Require an explicitly write-enabled named target profile."""
+
+        profile = self._profile()
+        if self._connection_profile is None or profile.write_enabled is not True:
+            raise ConfigError(
+                "A write-enabled named profile is required for staging operations."
+            )
+        return profile
+
+    @classmethod
+    def _staging_relation_sql(cls, relation: TransportRelation) -> str:
+        if relation.catalog_name is None:
+            raise ConfigError("A database is required for a MySQL staging table.")
+        return ".".join(
+            cls._quote_identifier(value)
+            for value in (relation.catalog_name, relation.object_name)
+        )
+
+    @staticmethod
+    def _mysql_staging_type(column: StagingColumn) -> str:
+        """Choose a lossless MySQL landing type without guessing."""
+
+        kind = column.canonical_type
+        if kind is CanonicalType.STRING:
+            return "LONGTEXT"
+        if kind is CanonicalType.INTEGER:
+            return "DECIMAL(38,0)"
+        if kind is CanonicalType.DECIMAL:
+            precision, scale = column.numeric_precision, column.numeric_scale
+            if precision is not None and scale is not None and 1 <= precision <= 65 and 0 <= scale <= min(30, precision):
+                return f"DECIMAL({precision},{scale})"
+            return "LONGTEXT"
+        if kind is CanonicalType.FLOAT:
+            return "DOUBLE"
+        if kind is CanonicalType.BOOLEAN:
+            return "BOOLEAN"
+        if kind is CanonicalType.DATE:
+            return "DATE"
+        if kind is CanonicalType.TIME:
+            return "TIME" if column.datetime_precision is None else f"TIME({column.datetime_precision})" if column.datetime_precision <= 6 else "LONGTEXT"
+        if kind is CanonicalType.TIMESTAMP:
+            return "DATETIME" if column.datetime_precision is None else f"DATETIME({column.datetime_precision})" if column.datetime_precision <= 6 else "LONGTEXT"
+        if kind is CanonicalType.TIMESTAMP_TZ:
+            return "LONGTEXT"
+        if kind is CanonicalType.BINARY:
+            return "LONGBLOB"
+        if kind is CanonicalType.SEMI_STRUCTURED:
+            return "JSON"
+        raise UnsupportedStagingTypeError(
+            "The source type cannot be represented safely in MySQL staging."
+        )
+
+    @classmethod
+    def _staging_column_sql(cls, column: StagingColumn) -> str:
+        rendered = f"{cls._quote_identifier(column.name)} {cls._mysql_staging_type(column)}"
+        return rendered + (" NOT NULL" if column.nullable is False else "")
+
+    @staticmethod
+    def _validate_staging_timeout(timeout_seconds: int) -> None:
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
+            raise ConfigError("timeout_seconds must be a positive integer.")
+
+    @staticmethod
+    def _raise_staging_error(error: BaseException, *, connection_phase: bool = False) -> NoReturn:
+        errno = getattr(error, "errno", None)
+        if isinstance(error, TimeoutError) or errno == 3024:
+            raise BatchTransportTimeoutError("Staging operation timed out.") from None
+        if connection_phase or errno in {2002, 2003, 2005, 2006, 2013}:
+            raise BatchTransportConnectionError("Staging connection failed.") from None
+        raise BatchTransportError("Staging operation failed.") from None
+
+    @contextlib.contextmanager
+    def _staging_connection(self, database: str, timeout_seconds: int):
+        connection = None
+        try:
+            profile = self._require_staging_write_profile()
+            connection = self._driver().connect(
+                **self._connection_kwargs(profile, database, timeout_seconds)
+            )
+            try:
+                yield connection
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    connection.rollback()
+                raise
+            finally:
+                connection.close()
+        except (ConfigError, BatchTransportError):
+            raise
+        except Exception as error:
+            self._raise_staging_error(error, connection_phase=connection is None)
+
+    @staticmethod
+    def _staging_bind_value(value: object, column: StagingColumn) -> object:
+        if value is None:
+            return None
+        if column.canonical_type is CanonicalType.SEMI_STRUCTURED:
+            try:
+                return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            except (TypeError, ValueError):
+                raise BatchTransportError("A semi-structured staging value is invalid.") from None
+        if MySQLConnector._mysql_staging_type(column) == "LONGTEXT" and column.canonical_type is not CanonicalType.STRING:
+            return str(value)
+        return value
+
+    def prepare_staging_table(self, *, definition: StagingTableDefinition, timeout_seconds: int) -> None:
+        """Create one exact, non-overwriting MySQL landing table."""
+
+        if not isinstance(definition, StagingTableDefinition):
+            raise TypeError("definition must be a StagingTableDefinition.")
+        self._validate_staging_timeout(timeout_seconds)
+        profile = self._require_staging_write_profile()
+        database = self._exact_database(definition.relation.catalog_name)
+        if definition.relation.schema_name != database:
+            raise ConfigError("MySQL schema must exactly match the configured database.")
+        query = f"CREATE TABLE {self._staging_relation_sql(definition.relation)} ({', '.join(self._staging_column_sql(column) for column in definition.columns)})"
+        with self._staging_connection(database, timeout_seconds) as connection:
+            cursor = connection.cursor()
+            try:
+                cursor.execute(query)
+                connection.commit()
+            finally:
+                cursor.close()
+
+    def write_batch(self, *, definition: StagingTableDefinition, batch: DataBatch, timeout_seconds: int) -> BatchWriteResult:
+        """Insert one complete, bound batch and require exact row evidence."""
+
+        if not isinstance(definition, StagingTableDefinition) or not isinstance(batch, DataBatch):
+            raise TypeError("definition must be a StagingTableDefinition and batch must be a DataBatch.")
+        self._validate_staging_timeout(timeout_seconds)
+        if batch.column_names != tuple(column.name for column in definition.columns):
+            raise BatchTransportError("Batch columns do not match the staging table definition.")
+        profile = self._require_staging_write_profile()
+        if batch.row_count > profile.max_rows:
+            raise ConfigError("Batch row count exceeds the selected profile limit.")
+        database = self._exact_database(definition.relation.catalog_name)
+        if definition.relation.schema_name != database:
+            raise ConfigError("MySQL schema must exactly match the configured database.")
+        columns_sql = ", ".join(self._quote_identifier(name) for name in batch.column_names)
+        # MySQL validates a bound JSON document when assigning it to a JSON
+        # column. Binding the serialized document directly is portable across
+        # supported server versions (unlike CAST(... AS JSON)).
+        placeholders = "(" + ", ".join("%s" for _ in definition.columns) + ")"
+        query = f"INSERT INTO {self._staging_relation_sql(definition.relation)} ({columns_sql}) VALUES {', '.join(placeholders for _ in batch.rows)}"
+        parameters = tuple(self._staging_bind_value(value, column) for row in batch.rows for value, column in zip(row, definition.columns))
+        with self._staging_connection(database, timeout_seconds) as connection:
+            cursor = connection.cursor()
+            try:
+                cursor.execute(query, parameters)
+                rows_written = cursor.rowcount
+                if isinstance(rows_written, bool) or not isinstance(rows_written, int) or rows_written != batch.row_count:
+                    raise BatchTransportError("MySQL did not confirm the complete staging batch.")
+                connection.commit()
+            finally:
+                cursor.close()
+        return BatchWriteResult(batch_number=batch.batch_number, rows_received=batch.row_count, rows_written=rows_written)
+
+    def drop_staging_table(self, *, relation: TransportRelation, timeout_seconds: int) -> None:
+        """Idempotently remove one exact MySQL staging table."""
+
+        if not isinstance(relation, TransportRelation):
+            raise TypeError("relation must be a TransportRelation.")
+        self._validate_staging_timeout(timeout_seconds)
+        self._require_staging_write_profile()
+        database = self._exact_database(relation.catalog_name)
+        if relation.schema_name != database:
+            raise ConfigError("MySQL schema must exactly match the configured database.")
+        with self._staging_connection(database, timeout_seconds) as connection:
+            cursor = connection.cursor()
+            try:
+                cursor.execute(f"DROP TABLE IF EXISTS {self._staging_relation_sql(relation)}")
+                connection.commit()
+            finally:
+                cursor.close()
 
     def test_connection(self, database: str | None = None, timeout_seconds: int | None = None) -> dict[str, Any]:
         """Verify connectivity and return a small non-secret server snapshot."""

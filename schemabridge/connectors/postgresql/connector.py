@@ -9,6 +9,7 @@ neutral query results rather than driver-specific objects.
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -30,7 +31,14 @@ from schemabridge.models.discovery import (
     SchemaMetadata,
     TableMetadata,
 )
-from schemabridge.models.transport import DataBatch, TransportRelation
+from schemabridge.models.metadata import CanonicalType
+from schemabridge.models.transport import (
+    BatchWriteResult,
+    DataBatch,
+    StagingColumn,
+    StagingTableDefinition,
+    TransportRelation,
+)
 from schemabridge.models.mapping import SqlDialect
 from schemabridge.normalizers._discovery_common import (
     _preference_key,
@@ -47,6 +55,7 @@ from schemabridge.transport.base import (
     BatchTransportConnectionError,
     BatchTransportError,
     BatchTransportTimeoutError,
+    UnsupportedStagingTypeError,
 )
 
 if TYPE_CHECKING:
@@ -364,6 +373,174 @@ class PostgreSQLConnector(DatabaseConnector):
             raise
         except Exception as error:
             self._raise_transport_error(error, connection_phase=not opened)
+
+    def _require_staging_write_profile(self) -> ConnectionConfig | ConnectionProfile:
+        """Require an explicitly write-enabled named target profile."""
+
+        profile = self._profile()
+        if self._connection_profile is None or profile.write_enabled is not True:
+            raise ConfigError(
+                "A write-enabled named profile is required for staging operations."
+            )
+        return profile
+
+    @classmethod
+    def _staging_relation_sql(cls, relation: TransportRelation) -> str:
+        """Render the PostgreSQL schema/table relation after exact DB validation."""
+
+        if relation.catalog_name is None:
+            raise ConfigError("A database is required for a PostgreSQL staging table.")
+        return ".".join(
+            cls._quote_transport_identifier(value)
+            for value in (relation.schema_name, relation.object_name)
+        )
+
+    @staticmethod
+    def _postgresql_staging_type(column: StagingColumn) -> str:
+        """Choose a lossless PostgreSQL landing type without guessing."""
+
+        kind = column.canonical_type
+        if kind is CanonicalType.STRING:
+            return "TEXT"
+        if kind is CanonicalType.INTEGER:
+            return "NUMERIC(38,0)"
+        if kind is CanonicalType.DECIMAL:
+            precision, scale = column.numeric_precision, column.numeric_scale
+            if precision is not None and scale is not None and 1 <= precision <= 131072 and 0 <= scale <= precision:
+                return f"NUMERIC({precision},{scale})"
+            return "TEXT"
+        if kind is CanonicalType.FLOAT:
+            return "DOUBLE PRECISION"
+        if kind is CanonicalType.BOOLEAN:
+            return "BOOLEAN"
+        if kind is CanonicalType.DATE:
+            return "DATE"
+        if kind is CanonicalType.TIME:
+            return "TIME" if column.datetime_precision is None else f"TIME({column.datetime_precision})" if column.datetime_precision <= 6 else "TEXT"
+        if kind is CanonicalType.TIMESTAMP:
+            return "TIMESTAMP" if column.datetime_precision is None else f"TIMESTAMP({column.datetime_precision})" if column.datetime_precision <= 6 else "TEXT"
+        if kind is CanonicalType.TIMESTAMP_TZ:
+            return "TIMESTAMPTZ" if column.datetime_precision is None else f"TIMESTAMPTZ({column.datetime_precision})" if column.datetime_precision <= 6 else "TEXT"
+        if kind is CanonicalType.BINARY:
+            return "BYTEA"
+        if kind is CanonicalType.SEMI_STRUCTURED:
+            return "JSONB"
+        raise UnsupportedStagingTypeError(
+            "The source type cannot be represented safely in PostgreSQL staging."
+        )
+
+    @classmethod
+    def _staging_column_sql(cls, column: StagingColumn) -> str:
+        rendered = f"{cls._quote_transport_identifier(column.name)} {cls._postgresql_staging_type(column)}"
+        return rendered + (" NOT NULL" if column.nullable is False else "")
+
+    @staticmethod
+    def _validate_staging_timeout(timeout_seconds: int) -> None:
+        PostgreSQLConnector._validate_transport_integer(timeout_seconds, "timeout_seconds")
+
+    @staticmethod
+    def _raise_staging_error(error: BaseException, *, connection_phase: bool = False) -> NoReturn:
+        sqlstate = getattr(error, "sqlstate", None)
+        if isinstance(error, TimeoutError) or sqlstate == "57014":
+            raise BatchTransportTimeoutError("Staging operation timed out.") from None
+        if connection_phase or (isinstance(sqlstate, str) and sqlstate.startswith("08")):
+            raise BatchTransportConnectionError("Staging connection failed.") from None
+        raise BatchTransportError("Staging operation failed.") from None
+
+    @contextlib.contextmanager
+    def _staging_connection(self, database: str, timeout_seconds: int):
+        connection = None
+        try:
+            profile = self._require_staging_write_profile()
+            connection = self._driver().connect(
+                **self._connection_kwargs(profile, database, timeout_seconds)
+            )
+            try:
+                yield connection
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    connection.rollback()
+                raise
+            finally:
+                connection.close()
+        except (ConfigError, BatchTransportError):
+            raise
+        except Exception as error:
+            self._raise_staging_error(error, connection_phase=connection is None)
+
+    @staticmethod
+    def _staging_bind_value(value: object, column: StagingColumn) -> object:
+        if value is None:
+            return None
+        if column.canonical_type is CanonicalType.SEMI_STRUCTURED:
+            try:
+                return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            except (TypeError, ValueError):
+                raise BatchTransportError("A semi-structured staging value is invalid.") from None
+        if PostgreSQLConnector._postgresql_staging_type(column) == "TEXT" and column.canonical_type is not CanonicalType.STRING:
+            return str(value)
+        return value
+
+    def prepare_staging_table(self, *, definition: StagingTableDefinition, timeout_seconds: int) -> None:
+        """Create one exact, non-overwriting PostgreSQL landing table."""
+
+        if not isinstance(definition, StagingTableDefinition):
+            raise TypeError("definition must be a StagingTableDefinition.")
+        self._validate_staging_timeout(timeout_seconds)
+        profile = self._require_staging_write_profile()
+        database = self._resolve_discovery_database(definition.relation.catalog_name, profile)
+        query = f"CREATE UNLOGGED TABLE {self._staging_relation_sql(definition.relation)} ({', '.join(self._staging_column_sql(column) for column in definition.columns)})"
+        with self._staging_connection(database, timeout_seconds) as connection:
+            cursor = connection.cursor()
+            try:
+                cursor.execute(query)
+                connection.commit()
+            finally:
+                cursor.close()
+
+    def write_batch(self, *, definition: StagingTableDefinition, batch: DataBatch, timeout_seconds: int) -> BatchWriteResult:
+        """Insert one complete, bound batch and require exact row evidence."""
+
+        if not isinstance(definition, StagingTableDefinition) or not isinstance(batch, DataBatch):
+            raise TypeError("definition must be a StagingTableDefinition and batch must be a DataBatch.")
+        self._validate_staging_timeout(timeout_seconds)
+        if batch.column_names != tuple(column.name for column in definition.columns):
+            raise BatchTransportError("Batch columns do not match the staging table definition.")
+        profile = self._require_staging_write_profile()
+        if batch.row_count > profile.max_rows:
+            raise ConfigError("Batch row count exceeds the selected profile limit.")
+        database = self._resolve_discovery_database(definition.relation.catalog_name, profile)
+        columns_sql = ", ".join(self._quote_transport_identifier(name) for name in batch.column_names)
+        placeholders = "(" + ", ".join("%s::jsonb" if column.canonical_type is CanonicalType.SEMI_STRUCTURED else "%s" for column in definition.columns) + ")"
+        query = f"INSERT INTO {self._staging_relation_sql(definition.relation)} ({columns_sql}) VALUES {', '.join(placeholders for _ in batch.rows)}"
+        parameters = tuple(self._staging_bind_value(value, column) for row in batch.rows for value, column in zip(row, definition.columns))
+        with self._staging_connection(database, timeout_seconds) as connection:
+            cursor = connection.cursor()
+            try:
+                cursor.execute(query, parameters)
+                rows_written = cursor.rowcount
+                if isinstance(rows_written, bool) or not isinstance(rows_written, int) or rows_written != batch.row_count:
+                    raise BatchTransportError("PostgreSQL did not confirm the complete staging batch.")
+                connection.commit()
+            finally:
+                cursor.close()
+        return BatchWriteResult(batch_number=batch.batch_number, rows_received=batch.row_count, rows_written=rows_written)
+
+    def drop_staging_table(self, *, relation: TransportRelation, timeout_seconds: int) -> None:
+        """Idempotently remove one exact PostgreSQL staging table."""
+
+        if not isinstance(relation, TransportRelation):
+            raise TypeError("relation must be a TransportRelation.")
+        self._validate_staging_timeout(timeout_seconds)
+        profile = self._require_staging_write_profile()
+        database = self._resolve_discovery_database(relation.catalog_name, profile)
+        with self._staging_connection(database, timeout_seconds) as connection:
+            cursor = connection.cursor()
+            try:
+                cursor.execute(f"DROP TABLE IF EXISTS {self._staging_relation_sql(relation)}")
+                connection.commit()
+            finally:
+                cursor.close()
 
     def read_batches(
         self,
