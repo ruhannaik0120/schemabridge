@@ -2,7 +2,7 @@
 
 The orchestrator verifies workflow state and immutable artifact lineage,
 recompiles the approved SQL, claims execution in the control plane, crosses the
-Snowflake boundary once, and records evidence.  Confirmed rollback is retryable;
+target database boundary once, and records evidence. Confirmed rollback is retryable;
 an outcome that cannot be proven moves the workflow into manual recovery.
 """
 
@@ -44,14 +44,18 @@ from schemabridge.persistence.errors import (
     WorkflowStaleArtifactReferenceError,
     WorkflowUnsafeGeneratedStatementError,
     WorkflowStagingCleanupError,
+    WorkflowUnsupportedExecutionConnectorError,
 )
 from schemabridge.persistence.serialization import request_hash
-from schemabridge.services.migration_execution import (
-    TargetExecutionDisposition,
-    TargetExecutionResult,
-)
 from schemabridge.services.workflow_persistence import WorkflowPersistenceService
 from schemabridge.models.workflow_transport import WorkflowStagingCleanupEvidence
+from schemabridge.models.transport import TransportRelation
+from schemabridge.target_execution import (
+    TargetExecutionDisposition,
+    TargetExecutionRegistry,
+    TargetExecutionResult,
+    UnsupportedTargetSystemError,
+)
 
 
 def _now() -> datetime:
@@ -79,7 +83,7 @@ class WorkflowExecutionOrchestrator:
         self,
         persistence: WorkflowPersistenceService,
         *,
-        transformation_compiler: object,
+        target_registry: TargetExecutionRegistry,
         execution_service: object,
         staging_cleanup_service: object | None = None,
         clock: Callable[[], datetime] = _now,
@@ -88,7 +92,7 @@ class WorkflowExecutionOrchestrator:
         """Bind persistence, pure compilation, remote execution, and test clocks."""
 
         self.persistence = persistence
-        self.transformation_compiler = transformation_compiler
+        self.target_registry = target_registry
         self.execution_service = execution_service
         self.staging_cleanup_service = staging_cleanup_service
         self.clock = clock
@@ -448,17 +452,25 @@ class WorkflowExecutionOrchestrator:
         # stored SQL preview directly.  Equality proves that neither the SQL nor
         # its bound parameters escaped the approval boundary.
         try:
-            expected_preview = self.transformation_compiler.compile_insert_select(
+            adapter = self.target_registry.resolve(workflow.target_relation.system)
+        except UnsupportedTargetSystemError:
+            raise WorkflowUnsupportedExecutionConnectorError() from None
+        if not adapter.capabilities.supports_insert_select_execution:
+            raise WorkflowUnsupportedExecutionConnectorError()
+        try:
+            expected_preview = adapter.compiler.compile_insert_select(
                 approved,
-                staging_database=preview.source_relation[0],
-                staging_schema=preview.source_relation[1],
-                staging_table=preview.source_relation[2],
+                staging_relation=TransportRelation(
+                    catalog_name=preview.source_relation[0],
+                    schema_name=preview.source_relation[1],
+                    object_name=preview.source_relation[2],
+                ),
             )
         except Exception:
             raise WorkflowUnsafeGeneratedStatementError() from None
         if expected_preview != preview:
             raise WorkflowUnsafeGeneratedStatementError()
-        self.execution_service.validate_preview(preview)
+        adapter.validate_preview(preview)
         target = self.execution_service.prepare(
             target_profile_id,
             target_database=workflow.target_relation.catalog_name,
@@ -526,7 +538,7 @@ class WorkflowExecutionOrchestrator:
             attempt.attempt_id, self.clock()
         )
         if not acquired:
-            # A timed-out RUNNING claim is not assumed failed: Snowflake may
+            # A timed-out RUNNING claim is not assumed failed: the target may
             # have committed after the caller lost contact, so retry is unsafe.
             if (
                 running.status is MigrationExecutionAttemptStatus.RUNNING
@@ -548,7 +560,7 @@ class WorkflowExecutionOrchestrator:
                     idempotency_key=idempotency_key,
                 )
             raise WorkflowExecutionAlreadyInProgressError()
-        result = self.execution_service.execute(target, preview)
+        result = adapter.execute(target, preview)
         completed = self._complete(
             claimed_workflow,
             running,

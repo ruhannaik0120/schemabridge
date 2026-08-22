@@ -10,8 +10,15 @@ from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
-from schemabridge.api.dependencies import get_migration_execution_service
-from schemabridge.models.mapping import GeneratedTransformationSql, TransformationStatementType
+from schemabridge.api.dependencies import (
+    get_migration_execution_service,
+    get_target_execution_registry,
+)
+from schemabridge.models.mapping import (
+    GeneratedTransformationSql,
+    SqlDialect,
+    TransformationStatementType,
+)
 from schemabridge.models.execution import MigrationExecutionAttempt, MigrationExecutionAttemptStatus
 from schemabridge.models.workflow import AuditActorType
 from schemabridge.persistence.serialization import request_hash
@@ -23,6 +30,13 @@ from schemabridge.services.migration_execution import (
 )
 from schemabridge.services.workflow_execution import WorkflowExecutionOrchestrator
 from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.target_execution import (
+    SnowflakeTargetExecutionAdapter,
+    SnowflakeTargetTransformationCompiler,
+    TargetExecutionAdapter,
+    TargetExecutionCapabilities,
+    TargetExecutionRegistry,
+)
 from tests.fakes.workflow_repository import InMemoryWorkflowRepository
 from tests.test_workflow_orchestration_api import (
     _application,
@@ -36,6 +50,14 @@ from tests.test_workflow_persistence_api import BASE
 
 
 class FakeExecutor:
+    database_type = "snowflake"
+    dialect = SqlDialect.SNOWFLAKE
+    capabilities = TargetExecutionCapabilities(
+        supports_select_preview=True,
+        supports_insert_select_preview=True,
+        supports_insert_select_execution=True,
+    )
+
     def __init__(
         self,
         outcomes: list[TargetExecutionResult] | None = None,
@@ -52,6 +74,7 @@ class FakeExecutor:
         self.invocations = 0
         self.prepared_profiles: list[str] = []
         self.previews: list[GeneratedTransformationSql] = []
+        self.compiler = SnowflakeTargetTransformationCompiler()
 
     @staticmethod
     def validate_preview(preview: GeneratedTransformationSql) -> None:
@@ -93,6 +116,14 @@ class FakeExecutor:
 def _app(repository: InMemoryWorkflowRepository, executor: object):
     app = _application(repository)
     app.dependency_overrides[get_migration_execution_service] = lambda: executor
+    adapter = (
+        executor
+        if isinstance(executor, TargetExecutionAdapter)
+        else SnowflakeTargetExecutionAdapter()
+    )
+    app.dependency_overrides[get_target_execution_registry] = lambda: (
+        TargetExecutionRegistry((adapter,))
+    )
     return app
 
 
@@ -181,6 +212,28 @@ def test_success_executes_persisted_compiler_output_once_and_reconstructs_after_
     assert reconstructed.status_code == 201
     assert reconstructed.json() == first.json()
     assert replacement_executor.invocations == 0
+
+
+def test_execution_is_blocked_when_the_target_adapter_declares_no_write_support() -> None:
+    repository = InMemoryWorkflowRepository()
+    executor = FakeExecutor()
+    executor.capabilities = TargetExecutionCapabilities(
+        supports_select_preview=True,
+        supports_insert_select_preview=True,
+        supports_insert_select_execution=False,
+    )
+    with TestClient(_app(repository, executor)) as client:
+        created, approved, preview = _ready(client)
+        response = _mutate(
+            client,
+            f"{BASE}/{created['workflow_id']}/execute",
+            _execution_payload(approved, preview),
+            "execution-not-supported",
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "UNSUPPORTED_EXECUTION_CONNECTOR"
+    assert executor.invocations == 0
 
 
 def test_execution_requires_approval_and_a_persisted_preview_and_accepts_no_sql() -> None:

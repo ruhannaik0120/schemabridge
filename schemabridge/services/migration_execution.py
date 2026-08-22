@@ -1,53 +1,24 @@
-"""Execute one compiler-produced transformation through a Snowflake profile.
+"""Prepare write-enabled target profiles for registered execution adapters.
 
-This boundary validates server-side profile identity and write authorization,
-accepts only Snowflake ``INSERT ... SELECT`` previews, and converts remote
-results into a small disposition contract.  Raw driver output and exceptions do
-not cross into workflow artifacts or public errors.
+Profile preparation is database-neutral: the selected profile must match the
+workflow's registered target system and be explicitly write enabled. Target
+adapters own dialect validation, statement execution, and outcome sanitation.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
 from typing import Callable
 
-from schemabridge.models.mapping import GeneratedTransformationSql, SqlDialect, TransformationStatementType
 from schemabridge.persistence.errors import (
     WorkflowTargetProfileNotWriteCapableError,
     WorkflowTargetProfileUnavailableError,
-    WorkflowUnsafeGeneratedStatementError,
     WorkflowUnsupportedExecutionConnectorError,
 )
-from schemabridge.validation.sql_guard import validate_query
-
-
-class TargetExecutionDisposition(str, Enum):
-    """Describe whether the remote transaction outcome can be proven."""
-
-    SUCCEEDED = "SUCCEEDED"
-    CONFIRMED_FAILED_ROLLED_BACK = "CONFIRMED_FAILED_ROLLED_BACK"
-    OUTCOME_UNCERTAIN = "OUTCOME_UNCERTAIN"
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedMigrationTarget:
-    """Credential-free execution context resolved from a named profile."""
-
-    profile_id: str
-    database: str
-    connector_type: str
-    timeout_seconds: int
-    service: object
-
-
-@dataclass(frozen=True, slots=True)
-class TargetExecutionResult:
-    """Sanitized result consumed by durable execution orchestration."""
-
-    disposition: TargetExecutionDisposition
-    affected_rows: int | None = None
-    failure_category: str | None = None
+from schemabridge.target_execution.base import (
+    PreparedMigrationTarget,
+    TargetExecutionDisposition,
+    TargetExecutionResult,
+)
 
 
 class ProfileBoundMigrationExecutionService:
@@ -66,10 +37,10 @@ class ProfileBoundMigrationExecutionService:
         target_system: str,
         timeout_seconds: int | None,
     ) -> PreparedMigrationTarget:
-        """Resolve and validate a write-enabled Snowflake execution target.
+        """Resolve a write-enabled profile matching the workflow target system.
 
         Raises a workflow-safe domain error when the profile is missing,
-        mismatched, read-only, non-Snowflake, or otherwise malformed.
+        mismatched, read-only, or otherwise malformed.
         """
 
         try:
@@ -83,9 +54,14 @@ class ProfileBoundMigrationExecutionService:
         # property a client can grant in an execution request.
         if context.get("write_enabled") is not True:
             raise WorkflowTargetProfileNotWriteCapableError()
+        profile_system = context.get("db_type")
         if (
-            str(context.get("db_type", "")).casefold() != "snowflake"
-            or target_system.casefold() != "snowflake"
+            not isinstance(profile_system, str)
+            or not profile_system.strip()
+            or not isinstance(target_system, str)
+            or not target_system.strip()
+            or profile_system.strip().casefold()
+            != target_system.strip().casefold()
         ):
             raise WorkflowUnsupportedExecutionConnectorError()
         configured_database = context.get("database")
@@ -112,57 +88,6 @@ class ProfileBoundMigrationExecutionService:
             timeout_seconds=effective_timeout,
             service=service,
         )
-
-    @staticmethod
-    def validate_preview(preview: GeneratedTransformationSql) -> None:
-        """Require a compiler-shaped Snowflake insert-select accepted by the guard."""
-
-        if (
-            not isinstance(preview, GeneratedTransformationSql)
-            or preview.dialect is not SqlDialect.SNOWFLAKE
-            or preview.statement_type is not TransformationStatementType.INSERT_SELECT
-            or not preview.sql.lstrip().upper().startswith("INSERT INTO ")
-        ):
-            raise WorkflowUnsafeGeneratedStatementError()
-        valid, _ = validate_query(preview.sql, "snowflake")
-        if not valid:
-            raise WorkflowUnsafeGeneratedStatementError()
-
-    def execute(
-        self,
-        target: PreparedMigrationTarget,
-        preview: GeneratedTransformationSql,
-    ) -> TargetExecutionResult:
-        """Execute the verified statement and return only sanitized evidence."""
-
-        self.validate_preview(preview)
-        if preview.target_relation[0] != target.database:
-            raise WorkflowUnsafeGeneratedStatementError()
-        try:
-            response = target.service.execute_migration_statement(
-                sql=preview.sql,
-                parameters=preview.parameters,
-                database=target.database,
-                timeout_seconds=target.timeout_seconds,
-            )
-        except Exception:
-            # Once control crossed the driver boundary, an exception alone does
-            # not prove rollback; retrying could duplicate a committed write.
-            return TargetExecutionResult(
-                TargetExecutionDisposition.OUTCOME_UNCERTAIN,
-                failure_category="TARGET_EXECUTION_INTERRUPTED",
-            )
-        rows = getattr(response, "rows_affected", None)
-        affected_rows = (
-            rows
-            if isinstance(rows, int) and not isinstance(rows, bool) and rows >= 0
-            else None
-        )
-        return TargetExecutionResult(
-            TargetExecutionDisposition.SUCCEEDED,
-            affected_rows=affected_rows,
-        )
-
 
 __all__ = [
     "PreparedMigrationTarget",

@@ -23,7 +23,7 @@ def test_profile_isolation_parameter_order_and_reconciliation(monkeypatch):
  report=MigrationValidationExecutionService().run(_request())
  assert events==['pg','sf'] and report.validation_report.status is MigrationValidationStatus.PASSED
  assert report.validation_report.approved_plan_version==1
- assert pg.calls[0]['parameters']==(' ',) and sf.calls[0].get('parameters') in (None,())
+ assert pg.calls[0]['parameters']==(' ',' ') and sf.calls[0].get('parameters') in (None,())
  assert pg.calls[0]['timeout_seconds']==sf.calls[0]['timeout_seconds']==9
 def test_non_default_approved_plan_version_is_preserved(monkeypatch):
  events=[];metrics={'row_count':1,'m000_null_count':0,'m000_distinct_count':1,'m001_null_count':0,'m001_distinct_count':1};pg=FakeService('pg',metrics,events);sf=FakeService('sf',metrics,events)

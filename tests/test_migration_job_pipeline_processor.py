@@ -19,7 +19,7 @@ from schemabridge.services.migration_jobs import (
     MigrationJobClaimService,
     MigrationJobCompletionService,
 )
-from schemabridge.services.transformation_sql import SnowflakeTransformationSqlCompiler
+from schemabridge.target_execution import TargetExecutionRegistry
 from schemabridge.services.validation_sql import compile_validation_sql
 from schemabridge.services.workflow_execution import WorkflowExecutionOrchestrator
 from schemabridge.services.workflow_orchestration import WorkflowPlanningOrchestrator
@@ -50,14 +50,6 @@ def _worker_context(
         persistence,
         clock=lambda: queued.queued_at + timedelta(seconds=120),
     )
-    compiler = SnowflakeTransformationSqlCompiler()
-    planning = WorkflowPlanningOrchestrator(
-        persistence,
-        discovery_resolver=lambda _profile_id: None,
-        mapping_service=object(),
-        approval_service=object(),
-        transformation_compiler=compiler,
-    )
     execution_result = TargetExecutionResult(
         execution_disposition,
         affected_rows=(3 if execution_disposition is TargetExecutionDisposition.SUCCEEDED else None),
@@ -71,13 +63,21 @@ def _worker_context(
         ),
     )
     executor = FakeExecutor([execution_result])
+    target_registry = TargetExecutionRegistry((executor,))
+    planning = WorkflowPlanningOrchestrator(
+        persistence,
+        discovery_resolver=lambda _profile_id: None,
+        mapping_service=object(),
+        approval_service=object(),
+        target_registry=target_registry,
+    )
     base = repository.get_workflow(workflow_id).updated_at
     execution_times = iter(
         base + timedelta(seconds=20 + index) for index in range(20)
     )
     execution = WorkflowExecutionOrchestrator(
         persistence,
-        transformation_compiler=compiler,
+        target_registry=target_registry,
         execution_service=executor,
         staging_cleanup_service=transport,
         clock=lambda: next(execution_times),

@@ -45,6 +45,8 @@ from schemabridge.persistence.errors import (
 )
 from schemabridge.persistence.serialization import request_hash
 from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.models.transport import TransportRelation
+from schemabridge.target_execution import TargetExecutionRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +68,7 @@ class WorkflowPlanningOrchestrator:
         discovery_resolver: Callable[[str], object],
         mapping_service: object,
         approval_service: object,
-        transformation_compiler: object,
+        target_registry: TargetExecutionRegistry,
     ) -> None:
         """Bind persistence and the injected discovery/compilation boundaries."""
 
@@ -74,7 +76,7 @@ class WorkflowPlanningOrchestrator:
         self.discovery_resolver = discovery_resolver
         self.mapping_service = mapping_service
         self.approval_service = approval_service
-        self.transformation_compiler = transformation_compiler
+        self.target_registry = target_registry
 
     @staticmethod
     def _context(
@@ -419,15 +421,19 @@ class WorkflowPlanningOrchestrator:
         elif None in (staging_database, staging_schema, staging_table):
             raise WorkflowPreviewCompilationError()
         try:
-            kwargs = {
-                "staging_database": staging_database,
-                "staging_schema": staging_schema,
-                "staging_table": staging_table,
-            }
+            adapter = self.target_registry.resolve(workflow.target_relation.system)
+            staging_relation = TransportRelation(
+                catalog_name=staging_database,
+                schema_name=staging_schema,
+                object_name=staging_table,
+            )
+            kwargs = {"staging_relation": staging_relation}
+            if not adapter.capabilities.supports_preview(statement_type):
+                raise WorkflowPreviewCompilationError()
             if statement_type is TransformationStatementType.SELECT:
-                preview = self.transformation_compiler.compile_select(approved, **kwargs)
+                preview = adapter.compiler.compile_select(approved, **kwargs)
             else:
-                preview = self.transformation_compiler.compile_insert_select(
+                preview = adapter.compiler.compile_insert_select(
                     approved, **kwargs
                 )
         except Exception:

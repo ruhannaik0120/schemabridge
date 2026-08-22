@@ -64,14 +64,6 @@ def get_validation_execution_service_factory() -> Callable:
     return get_validation_execution_service
 
 
-def get_transformation_compiler():
-    """Build the Snowflake compiler used for preview and verified execution."""
-
-    from schemabridge.services.transformation_sql import SnowflakeTransformationSqlCompiler
-
-    return SnowflakeTransformationSqlCompiler()
-
-
 def get_validation_compiler() -> Callable:
     """Return the pure function that generates paired validation queries."""
 
@@ -96,6 +88,25 @@ def get_migration_execution_service(
     from schemabridge.services.migration_execution import ProfileBoundMigrationExecutionService
 
     return ProfileBoundMigrationExecutionService(database_service_factory)
+
+
+def get_target_execution_registry():
+    """Register the target adapters currently supported by the application."""
+
+    from schemabridge.target_execution import (
+        MySqlTargetExecutionAdapter,
+        PostgreSqlTargetExecutionAdapter,
+        SnowflakeTargetExecutionAdapter,
+        TargetExecutionRegistry,
+    )
+
+    return TargetExecutionRegistry(
+        (
+            SnowflakeTargetExecutionAdapter(),
+            PostgreSqlTargetExecutionAdapter(),
+            MySqlTargetExecutionAdapter(),
+        )
+    )
 
 
 def get_batch_transport_service(
@@ -152,7 +163,7 @@ def get_workflow_planning_orchestrator(
     discovery_resolver=Depends(get_schema_discovery_service),
     mapping_service=Depends(get_schema_mapping_service),
     approval_service=Depends(get_mapping_approval_service),
-    transformation_compiler=Depends(get_transformation_compiler),
+    target_registry=Depends(get_target_execution_registry),
 ):
     """Assemble planning coordination over request-scoped dependencies."""
 
@@ -163,13 +174,13 @@ def get_workflow_planning_orchestrator(
         discovery_resolver=discovery_resolver,
         mapping_service=mapping_service,
         approval_service=approval_service,
-        transformation_compiler=transformation_compiler,
+        target_registry=target_registry,
     )
 
 
 def get_workflow_execution_orchestrator(
     persistence=Depends(get_workflow_persistence_service),
-    transformation_compiler=Depends(get_transformation_compiler),
+    target_registry=Depends(get_target_execution_registry),
     execution_service=Depends(get_migration_execution_service),
     staging_cleanup_service=Depends(get_batch_transport_service),
 ):
@@ -179,7 +190,7 @@ def get_workflow_execution_orchestrator(
 
     return WorkflowExecutionOrchestrator(
         persistence,
-        transformation_compiler=transformation_compiler,
+        target_registry=target_registry,
         execution_service=execution_service,
         staging_cleanup_service=staging_cleanup_service,
     )
@@ -220,12 +231,12 @@ REQUIRED_DEPENDENCY_HOOKS = (
     get_schema_discovery_service,
     get_schema_mapping_service,
     get_mapping_approval_service,
-    get_transformation_compiler,
     get_validation_compiler,
     get_validation_execution_service,
     get_validation_execution_service_factory,
     get_database_service_factory,
     get_migration_execution_service,
+    get_target_execution_registry,
     get_batch_transport_service,
     build_workflow_repository,
     get_workflow_repository,

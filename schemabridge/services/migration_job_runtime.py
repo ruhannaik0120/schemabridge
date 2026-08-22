@@ -21,8 +21,11 @@ from schemabridge.services.migration_jobs import (
     MigrationJobCompletionService,
 )
 from schemabridge.services.schema_mapping import SchemaMappingService
-from schemabridge.services.transformation_sql import (
-    SnowflakeTransformationSqlCompiler,
+from schemabridge.target_execution import (
+    MySqlTargetExecutionAdapter,
+    PostgreSqlTargetExecutionAdapter,
+    SnowflakeTargetExecutionAdapter,
+    TargetExecutionRegistry,
 )
 from schemabridge.services.validation_execution import (
     MigrationValidationExecutionService,
@@ -45,7 +48,16 @@ def build_migration_job_worker(
     persistence = WorkflowPersistenceService(repository)
     completion = MigrationJobCompletionService(persistence)
     transport_service = ProfileBoundBatchTransportService(database_service_factory)
-    compiler = SnowflakeTransformationSqlCompiler()
+    execution_service = ProfileBoundMigrationExecutionService(
+        database_service_factory
+    )
+    target_registry = TargetExecutionRegistry(
+        (
+            SnowflakeTargetExecutionAdapter(),
+            PostgreSqlTargetExecutionAdapter(),
+            MySqlTargetExecutionAdapter(),
+        )
+    )
 
     staging_step = MigrationJobStagingStep(
         persistence,
@@ -62,14 +74,12 @@ def build_migration_job_worker(
             discovery_resolver=database_service_factory,
             mapping_service=SchemaMappingService(),
             approval_service=MappingApprovalService(),
-            transformation_compiler=compiler,
+            target_registry=target_registry,
         ),
         WorkflowExecutionOrchestrator(
             persistence,
-            transformation_compiler=compiler,
-            execution_service=ProfileBoundMigrationExecutionService(
-                database_service_factory
-            ),
+            target_registry=target_registry,
+            execution_service=execution_service,
             staging_cleanup_service=transport_service,
         ),
         completion_service=completion,

@@ -14,7 +14,7 @@ from schemabridge.services.migration_execution import (
 )
 from schemabridge.services.migration_job_pipeline import MigrationJobExecutionStep
 from schemabridge.services.migration_jobs import MigrationJobCompletionService
-from schemabridge.services.transformation_sql import SnowflakeTransformationSqlCompiler
+from schemabridge.target_execution import TargetExecutionRegistry
 from schemabridge.services.workflow_execution import WorkflowExecutionOrchestrator
 from schemabridge.services.workflow_orchestration import WorkflowPlanningOrchestrator
 from schemabridge.services.workflow_persistence import WorkflowPersistenceService
@@ -53,15 +53,15 @@ def _execution_context(
     )
     staged = staging_step.run(claimed)
     persistence = WorkflowPersistenceService(repository)
-    compiler = SnowflakeTransformationSqlCompiler()
+    executor = executor or FakeExecutor()
+    target_registry = TargetExecutionRegistry((executor,))
     planning = planning or WorkflowPlanningOrchestrator(
         persistence,
         discovery_resolver=lambda _profile_id: None,
         mapping_service=object(),
         approval_service=object(),
-        transformation_compiler=compiler,
+        target_registry=target_registry,
     )
-    executor = executor or FakeExecutor()
     cleanup_service = (
         transport
         if cleanup == "normal"
@@ -73,7 +73,7 @@ def _execution_context(
     times = iter(start + timedelta(seconds=index) for index in range(20))
     execution = WorkflowExecutionOrchestrator(
         persistence,
-        transformation_compiler=compiler,
+        target_registry=target_registry,
         execution_service=executor,
         staging_cleanup_service=cleanup_service,
         clock=lambda: next(times),

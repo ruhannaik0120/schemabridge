@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+import pytest
+
 from schemabridge.connectors.mysql.connector import MySQLConnector
 from schemabridge.connectors.validation import ValidationQueryDialectProvider
 from schemabridge.models.connection_profile import ConnectionProfile
@@ -13,7 +15,10 @@ from schemabridge.models.transport import TransportRelation
 from schemabridge.transport.base import BatchSourceReader
 from schemabridge.services.database_service import DatabaseExecutionResult
 from schemabridge.services.validation_execution import MigrationValidationExecutionService
-from schemabridge.services.validation_sql import compile_validation_sql
+from schemabridge.services.validation_sql import (
+    InvalidTransformationPlanError,
+    compile_validation_sql,
+)
 from tests.test_transformation_sql import _approved
 from tests.test_validation_execution import _request
 
@@ -198,7 +203,38 @@ def test_mysql_validation_sql_uses_mysql_dialect_and_identifier_quotes() -> None
 
     assert source.dialect is SqlDialect.MYSQL
     assert "FROM `shop`.`customers` AS `src`" in source.sql
+    assert source.parameters == (" ", " ")
     assert target.dialect is SqlDialect.SNOWFLAKE
+
+
+def test_mysql_target_validation_uses_database_table_relation() -> None:
+    _source, target = compile_validation_sql(
+        _approved(),
+        source_schema="shop",
+        source_table="customers",
+        target_database="warehouse",
+        target_schema="warehouse",
+        target_table="customers",
+        source_dialect=SqlDialect.MYSQL,
+        target_dialect=SqlDialect.MYSQL,
+    )
+
+    assert target.dialect is SqlDialect.MYSQL
+    assert "FROM `warehouse`.`customers` AS `tgt`" in target.sql
+
+
+def test_mysql_target_validation_rejects_different_database_and_schema() -> None:
+    with pytest.raises(InvalidTransformationPlanError):
+        compile_validation_sql(
+            _approved(),
+            source_schema="shop",
+            source_table="customers",
+            target_database="warehouse",
+            target_schema="public",
+            target_table="customers",
+            source_dialect=SqlDialect.MYSQL,
+            target_dialect=SqlDialect.MYSQL,
+        )
 
 
 def test_validation_execution_accepts_mysql_source_capability() -> None:

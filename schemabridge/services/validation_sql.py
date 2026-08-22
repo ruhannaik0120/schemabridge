@@ -197,13 +197,6 @@ def compile_validation_sql(
     for index, item in enumerate(approved):
         if item.target_column is None or item.transformation is None:
             raise InvalidTransformationPlanError("Invalid validation plan.")
-        expression = _validation_expression(
-            item.transformation,
-            dialect=source_dialect,
-            alias=source_alias,
-            allowed=allowed,
-            parameters=source_parameters,
-        )
         target = f"{_quote(target_dialect, target_alias)}.{_quote(target_dialect, item.target_column)}"
         base = f"m{index:03d}"
         for check_type, body in (
@@ -223,8 +216,15 @@ def compile_validation_sql(
                     target_metric_alias=alias,
                 )
             )
+            source_expression = _validation_expression(
+                item.transformation,
+                dialect=source_dialect,
+                alias=source_alias,
+                allowed=allowed,
+                parameters=source_parameters,
+            )
             source_projections.append(
-                body.format(expression) + f" AS {_quote(source_dialect, alias)}"
+                body.format(source_expression) + f" AS {_quote(source_dialect, alias)}"
             )
             target_projections.append(
                 body.format(target) + f" AS {_quote(target_dialect, alias)}"
@@ -241,8 +241,15 @@ def compile_validation_sql(
                     target_metric_alias=alias,
                 )
             )
+            source_expression = _validation_expression(
+                item.transformation,
+                dialect=source_dialect,
+                alias=source_alias,
+                allowed=allowed,
+                parameters=source_parameters,
+            )
             source_projections.append(
-                f"COUNT(DISTINCT {expression}) AS {_quote(source_dialect, alias)}"
+                f"COUNT(DISTINCT {source_expression}) AS {_quote(source_dialect, alias)}"
             )
             target_projections.append(
                 f"COUNT(DISTINCT {target}) AS {_quote(target_dialect, alias)}"
@@ -251,13 +258,23 @@ def compile_validation_sql(
     source_relation = ".".join(
         (_quote(source_dialect, source_schema), _quote(source_dialect, source_table))
     )
-    target_relation = ".".join(
-        (
-            _quote(target_dialect, target_database),
-            _quote(target_dialect, target_schema),
-            _quote(target_dialect, target_table),
+    if target_dialect is SqlDialect.MYSQL:
+        # MySQL uses one database name where the canonical model has both a
+        # catalog and schema.  Rendering both would create invalid three-part
+        # MySQL SQL and could point validation at the wrong relation.
+        if target_database != target_schema:
+            raise InvalidTransformationPlanError("Invalid validation plan.")
+        target_relation = ".".join(
+            (_quote(target_dialect, target_database), _quote(target_dialect, target_table))
         )
-    )
+    else:
+        target_relation = ".".join(
+            (
+                _quote(target_dialect, target_database),
+                _quote(target_dialect, target_schema),
+                _quote(target_dialect, target_table),
+            )
+        )
     aliases = tuple(item.check_id for item in checks)
     return (
         GeneratedValidationSql(

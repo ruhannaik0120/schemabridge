@@ -347,7 +347,7 @@ def test_transformation_and_validation_previews_are_deterministic_and_non_execut
     pair = validation.json()
     assert pair["preview_only"] is True
     assert [pair["source"]["dialect"], pair["target"]["dialect"]] == ["POSTGRESQL", "SNOWFLAKE"]
-    assert pair["source"]["parameters"] == [" "] and pair["target"]["parameters"] == []
+    assert pair["source"]["parameters"] == [" ", " "] and pair["target"]["parameters"] == []
     assert [item["check_id"] for item in pair["source"]["checks"]] == pair["source"]["metric_aliases"]
 
 
@@ -427,7 +427,7 @@ def test_complete_http_workflow_executes_ordered_profile_bound_validation(monkey
     assert approval_payload == approval_snapshot
     assert preview.json()["parameters"] == [" "]
     assert calls[0][0] == "pg-source" and calls[1][0] == "sf-target"
-    assert calls[0][1]["parameters"] == (" ",) and calls[1][1]["parameters"] == ()
+    assert calls[0][1]["parameters"] == (" ", " ") and calls[1][1]["parameters"] == ()
     assert calls[0][1]["timeout_seconds"] == calls[1][1]["timeout_seconds"] == 11
     assert executed.json()["validation_report"]["status"] == "PASSED"
     assert executed.json()["validation_report"]["mismatched_count"] == 0

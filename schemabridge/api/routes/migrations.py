@@ -14,6 +14,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from schemabridge.models.mapping import TransformationStatementType
+from schemabridge.models.transport import TransportRelation
+from schemabridge.target_execution import UnsupportedTargetOperationError
 
 from ..adapters.migrations import (
     approved_plan_to_api,
@@ -32,7 +34,7 @@ from ..dependencies import (
     get_mapping_approval_service,
     get_schema_discovery_service,
     get_schema_mapping_service,
-    get_transformation_compiler,
+    get_target_execution_registry,
     get_validation_compiler,
     get_validation_execution_service_factory,
 )
@@ -157,13 +159,13 @@ async def approve_mappings(
     "/transformations/preview",
     name="migration_transformation_preview",
     operation_id="migration_transformation_preview",
-    summary="Compile Snowflake transformation SQL",
+    summary="Compile target transformation SQL",
     response_model=GeneratedTransformationSqlSchema,
     responses=_CLIENT_ERRORS,
 )
 async def preview_transformation(
     request: TransformationPreviewRequest,
-    compiler=Depends(get_transformation_compiler),
+    target_registry=Depends(get_target_execution_registry),
 ) -> GeneratedTransformationSqlSchema:
     """Compile approved mappings into a read-only or insert-select preview."""
 
@@ -172,22 +174,29 @@ async def preview_transformation(
     except (TypeError, ValueError):
         raise _error(400, "TRANSFORMATION_COMPILATION_FAILED", "The transformation preview could not be compiled.") from None
     try:
+        adapter = target_registry.resolve(plan.target_table.system)
+        if not adapter.capabilities.supports_preview(request.statement_type):
+            raise UnsupportedTargetOperationError(
+                "The target database does not support this preview."
+            )
         kwargs = {
-            "staging_database": request.staging_database,
-            "staging_schema": request.staging_schema,
-            "staging_table": request.staging_table,
+            "staging_relation": TransportRelation(
+                catalog_name=request.staging_database,
+                schema_name=request.staging_schema,
+                object_name=request.staging_table,
+            )
         }
         if request.statement_type is TransformationStatementType.SELECT:
-            generated = compiler.compile_select(plan, **kwargs)
+            generated = adapter.compiler.compile_select(plan, **kwargs)
         else:
-            generated = compiler.compile_insert_select(plan, **kwargs)
+            generated = adapter.compiler.compile_insert_select(plan, **kwargs)
         return transformation_sql_to_api(generated)
     except Exception as error:
         name = type(error).__name__
-        if name not in {"UnsupportedTransformationError", "TransformationCompilationError", "InvalidTransformationPlanError"}:
+        if name not in {"UnsupportedTransformationError", "TransformationCompilationError", "InvalidTransformationPlanError", "UnsupportedTargetOperationError", "UnsupportedTargetSystemError"}:
             raise
-        code = "UNSUPPORTED_TRANSFORMATION" if name == "UnsupportedTransformationError" else "TRANSFORMATION_COMPILATION_FAILED"
-        message = "The transformation is unsupported." if code == "UNSUPPORTED_TRANSFORMATION" else "The transformation preview could not be compiled."
+        code = "UNSUPPORTED_TRANSFORMATION" if name in {"UnsupportedTransformationError", "UnsupportedTargetOperationError"} else "TRANSFORMATION_COMPILATION_FAILED"
+        message = "The requested target operation is unsupported." if code == "UNSUPPORTED_TRANSFORMATION" else "The transformation preview could not be compiled."
         raise _error(400, code, message) from None
 
 

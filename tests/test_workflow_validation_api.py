@@ -8,13 +8,18 @@ from threading import Event
 
 from fastapi.testclient import TestClient
 
-from schemabridge.api.dependencies import get_migration_execution_service, get_validation_execution_service
+from schemabridge.api.dependencies import (
+    get_migration_execution_service,
+    get_target_execution_registry,
+    get_validation_execution_service,
+)
 from schemabridge.models.validation import MigrationValidationExecutionReport, MigrationValidationStatus, ValidationExecutionStatus
 from schemabridge.models.mapping import SqlDialect
 from schemabridge.persistence.errors import WorkflowPersistenceError
 from schemabridge.services.migration_execution import TargetExecutionDisposition, TargetExecutionResult
 from schemabridge.services.reconciliation import reconcile_validation_results
 from schemabridge.services.validation_sql import compile_validation_sql
+from schemabridge.target_execution import TargetExecutionAdapter, TargetExecutionRegistry
 from tests.fakes.workflow_repository import InMemoryWorkflowRepository
 from tests.test_workflow_execution_api import FakeExecutor, _execution_payload, _ready
 from tests.test_workflow_orchestration_api import _application, _create, _mutate
@@ -85,6 +90,10 @@ def _app(repository, migration_executor, validation_executor):
     app = _application(repository)
     app.dependency_overrides[get_migration_execution_service] = lambda: migration_executor
     app.dependency_overrides[get_validation_execution_service] = lambda: validation_executor
+    if isinstance(migration_executor, TargetExecutionAdapter):
+        app.dependency_overrides[get_target_execution_registry] = lambda: (
+            TargetExecutionRegistry((migration_executor,))
+        )
     return app
 
 

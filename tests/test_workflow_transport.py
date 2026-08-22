@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from schemabridge.api.dependencies import (
     get_batch_transport_service,
     get_migration_execution_service,
+    get_target_execution_registry,
 )
 from schemabridge.models.transport import (
     BatchTransportProgress,
@@ -30,6 +31,7 @@ from schemabridge.services.batch_transport import (
 )
 from schemabridge.services.workflow_persistence import WorkflowPersistenceService
 from schemabridge.services.workflow_transport import WorkflowTransportOrchestrator
+from schemabridge.target_execution import TargetExecutionRegistry
 from tests.fakes.workflow_repository import InMemoryWorkflowRepository
 from tests.test_workflow_orchestration_api import (
     _application,
@@ -251,6 +253,9 @@ def test_api_loads_managed_staging_and_preview_uses_it_automatically() -> None:
     app.dependency_overrides[get_batch_transport_service] = lambda: transport
     executor = FakeExecutor()
     app.dependency_overrides[get_migration_execution_service] = lambda: executor
+    app.dependency_overrides[get_target_execution_registry] = lambda: (
+        TargetExecutionRegistry((executor,))
+    )
 
     with TestClient(app) as client:
         created = _create(client)
