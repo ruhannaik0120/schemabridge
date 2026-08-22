@@ -512,6 +512,82 @@ class SnowflakeConnector(DatabaseConnector):
     ) -> str:
         return self._resolve_discovery_database(relation.catalog_name, profile)
 
+    def read_batches(
+        self,
+        *,
+        relation: TransportRelation,
+        column_names: tuple[str, ...],
+        batch_size: int,
+        timeout_seconds: int,
+    ) -> Iterator[DataBatch]:
+        """Read one Snowflake relation in bounded batches for transport.
+
+        The method builds its own identifier-quoted SELECT statement.  Callers
+        can choose only the discovered relation and ordered column names, never
+        arbitrary SQL, so a read-only source profile is sufficient.
+        """
+
+        if not isinstance(relation, TransportRelation):
+            raise TypeError("relation must be a TransportRelation.")
+        if not isinstance(column_names, tuple) or not column_names:
+            raise ConfigError("column_names must be a non-empty tuple.")
+        if len(set(column_names)) != len(column_names):
+            raise ConfigError("column_names must be unique.")
+        if (
+            isinstance(batch_size, bool)
+            or not isinstance(batch_size, int)
+            or batch_size <= 0
+            or isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int)
+            or timeout_seconds <= 0
+        ):
+            raise ConfigError("batch_size and timeout_seconds must be positive integers.")
+        for column_name in column_names:
+            self._validate_discovery_identifier(column_name, "column_name")
+
+        profile = self._profile()
+        if batch_size > profile.max_rows:
+            raise ConfigError("batch_size exceeds the selected profile limit.")
+        database = self._resolve_discovery_database(relation.catalog_name, profile)
+        relation_sql = ".".join(
+            self._quote_staging_identifier(value)
+            for value in (database, relation.schema_name, relation.object_name)
+        )
+        columns_sql = ", ".join(
+            self._quote_staging_identifier(column_name) for column_name in column_names
+        )
+        query = f"SELECT {columns_sql} FROM {relation_sql}"
+
+        connection = None
+        try:
+            kwargs = self._connection_kwargs(profile, database)
+            kwargs["autocommit"] = True
+            kwargs["login_timeout"] = timeout_seconds
+            connection = self._driver().connect(**kwargs)
+            cursor = connection.cursor()
+            try:
+                self._execute(cursor, query, timeout_seconds=timeout_seconds)
+                batch_number = 1
+                while True:
+                    rows = tuple(tuple(row) for row in cursor.fetchmany(batch_size))
+                    if not rows:
+                        break
+                    yield DataBatch(
+                        batch_number=batch_number,
+                        column_names=column_names,
+                        rows=rows,
+                    )
+                    batch_number += 1
+            finally:
+                cursor.close()
+        except (ConfigError, BatchTransportError):
+            raise
+        except Exception as error:
+            self._raise_staging_error(error, connection_phase=connection is None)
+        finally:
+            if connection is not None:
+                connection.close()
+
     def prepare_staging_table(
         self,
         *,

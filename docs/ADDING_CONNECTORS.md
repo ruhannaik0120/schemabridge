@@ -34,3 +34,44 @@ Register the module path in `SUPPORTED_CONNECTORS` inside `schemabridge/connecto
 10. Add fake-driver unit tests and perform opt-in live verification separately.
 
 Supporting a new backend in durable orchestration is separate feature work. It requires explicit discovery, execution, validation, safety, and recovery policy rather than only a factory entry.
+
+## Bounded transport extensions
+
+Connectors can also implement one or both optional transport capabilities:
+
+```python
+class ExampleSourceReader:
+    def read_batches(self, *, relation, column_names, batch_size, timeout_seconds): ...
+
+class ExampleStagingWriter:
+    def prepare_staging_table(self, *, definition, timeout_seconds): ...
+    def write_batch(self, *, definition, batch, timeout_seconds): ...
+    def drop_staging_table(self, *, relation, timeout_seconds): ...
+```
+
+The contracts are `BatchSourceReader` and `StagingTableWriter` in
+`schemabridge.transport.base`. `BatchTransportService` is deliberately
+vendor-neutral: it streams one `DataBatch` at a time and accepts a batch only
+when `BatchWriteResult` confirms the exact received row count.
+
+### Reader requirements
+
+1. Build the `SELECT` statement from separately quoted relation and column identifiers; do not accept arbitrary SQL.
+2. Fetch at most `batch_size` rows per batch, enforce the profile `max_rows` limit, and close resources if a consumer stops early.
+3. Use the supplied timeout and translate driver failures to sanitized transport exceptions.
+4. A source profile need not be write-enabled.
+
+### Writer requirements
+
+1. Require a named `ConnectionProfile` with `write_enabled=true`; generic environment configuration is never sufficient for staging writes.
+2. Require the staging relation database to exactly match the target profile. Quote every identifier component; never splice untrusted text as SQL.
+3. Create a non-overwriting, SchemaBridge-managed landing table. Map canonical values losslessly; fall back to text when target numeric or temporal limits could lose information, and reject `UNKNOWN` rather than guessing.
+4. Bind every row value. Serialize semi-structured values deterministically before using the target's JSON representation.
+5. Commit only after the driver confirms that it wrote the full batch. Any partial or absent row-count confirmation must roll back and return no success evidence.
+6. Implement `DROP TABLE IF EXISTS` for the exact relation so recovery can prove cleanup before a retry.
+
+Snowflake, PostgreSQL, and MySQL currently implement both optional transport
+roles. The focused fake-driver tests cover identifier quoting, profile gating,
+timeouts/error sanitization, exact row-count checks, and a Snowflake-to-
+PostgreSQL bounded-transfer proof. Add a comparable proof whenever a new
+source/writer combination is introduced.
