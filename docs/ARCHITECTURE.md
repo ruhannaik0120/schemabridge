@@ -125,7 +125,7 @@ It is not the migration source database. Keeping it separate lets SchemaBridge a
 
 The source profile is selected by the workflow's `source_profile_id`; the target profile is selected by `target_profile_id`. PostgreSQL, MySQL, and Snowflake can each provide discovery, bounded extraction, staging writes, target execution, and validation dialect support. The durable write path checks that the profile database exactly matches the workflow target and that `write_enabled=true`. SchemaBridge does not persist data-plane credentials or business rows.
 
-The transport orchestrator creates a uniquely named transient staging table, copies bounded source batches, and persists counts and relation identity without business rows. The generated `INSERT ... SELECT` reads the exact staging relation rehydrated from that evidence.
+The transport orchestrator creates a uniquely named transient staging table and persists counts and relation identity without business rows. Eligible large PostgreSQL/MySQL tables use partitioned Spark JDBC reads and append only to that staging table; all other sources use bounded connector batches. The generated `INSERT ... SELECT` reads the exact staging relation rehydrated from that evidence.
 
 ## Workflow path details
 

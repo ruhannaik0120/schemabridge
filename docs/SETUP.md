@@ -132,6 +132,8 @@ The normal suite does not use live databases. The following variables enable exp
 
 Keep all flags disabled for credential-free verification.
 
+For automatic large-table Spark routing, see [Automatic Spark transport](SPARK_TRANSPORT.md). Install `requirements-spark.txt` only on hosts that should run Spark. The normal transport path remains available when PySpark is absent.
+
 ## Run credential-free tests
 
 Windows:

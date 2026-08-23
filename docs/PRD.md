@@ -30,7 +30,7 @@ The current repository does not provide:
 
 - a frontend, authentication system, background worker, or hosted production deployment;
 - file ingestion, change-data capture, or streaming transport;
-- Jira, MCP, Excel, HTML-reporting, AWS, or PySpark integration;
+- Jira, MCP, Excel, HTML-reporting, AWS, or Snowflake Spark integration;
 - AI-based mapping, fuzzy profiling, or automatic resolution of ambiguous mappings;
 - full row-by-row data comparison;
 - automatic recovery from an uncertain remote database outcome.

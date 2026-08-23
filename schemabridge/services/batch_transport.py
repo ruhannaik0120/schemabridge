@@ -7,13 +7,14 @@ rows, or decide durable workflow recovery policy.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import re
 from typing import Callable
 from uuid import UUID
 
 from schemabridge.models.discovery import TableMetadata
+from schemabridge.models.connection_profile import ConnectionProfile
 from schemabridge.models.transport import (
     BatchTransportProgress,
     BatchTransportResult,
@@ -29,6 +30,10 @@ from schemabridge.transport.base import (
     BatchSourceReader,
     BatchTransportError,
     StagingTableWriter,
+)
+from schemabridge.transport.strategy import (
+    SequentialBatchTransportStrategy,
+    TransportExecutionStrategy,
 )
 
 
@@ -92,7 +97,7 @@ class BatchTransportService:
         )
 
     @staticmethod
-    def _definition(
+    def staging_definition(
         source_table: TableMetadata,
         staging_relation: TransportRelation,
     ) -> StagingTableDefinition:
@@ -133,7 +138,7 @@ class BatchTransportService:
             target_database=target_database,
             target_schema=target_schema,
         )
-        definition = self._definition(source_table, staging_relation)
+        definition = self.staging_definition(source_table, staging_relation)
         source_relation = TransportRelation(
             catalog_name=source_table.catalog_name,
             schema_name=source_table.schema_name,
@@ -229,6 +234,8 @@ class PreparedBatchTransport:
     timeout_seconds: int
     source_reader: BatchSourceReader
     staging_writer: StagingTableWriter
+    source_profile: ConnectionProfile | None = field(default=None, repr=False)
+    target_profile: ConnectionProfile | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,11 +247,111 @@ class ProfileBoundBatchTransportResult:
     failure_category: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class TransportStrategySelection:
+    """Describe the chosen transport path without exposing connection details."""
+
+    strategy: TransportExecutionStrategy
+    spark_selected: bool
+    fallback_reason: str | None = None
+
+
 class ProfileBoundBatchTransportService:
     """Resolve named profiles and classify cleanup after a transfer failure."""
 
-    def __init__(self, database_service_factory: Callable[[str], object]) -> None:
+    def __init__(
+        self,
+        database_service_factory: Callable[[str], object],
+        *,
+        spark_settings: object | None = None,
+        spark_runtime_available: Callable[[], bool] | None = None,
+    ) -> None:
         self.database_service_factory = database_service_factory
+        self.spark_settings = spark_settings
+        self.spark_runtime_available = spark_runtime_available
+
+    def select_execution_strategy(
+        self,
+        prepared: PreparedBatchTransport,
+        source_table: TableMetadata,
+        *,
+        target_database: str,
+        target_schema: str,
+    ) -> TransportExecutionStrategy:
+        """Choose Spark only for an opted-in, fully eligible large-table path."""
+
+        return self.select_execution_plan(
+            prepared,
+            source_table,
+            target_database=target_database,
+            target_schema=target_schema,
+        ).strategy
+
+    def select_execution_plan(
+        self,
+        prepared: PreparedBatchTransport,
+        source_table: TableMetadata,
+        *,
+        target_database: str,
+        target_schema: str,
+    ) -> TransportStrategySelection:
+        """Return an explicit Spark choice or a safe sequential fallback reason."""
+
+        if self.spark_settings is None:
+            return TransportStrategySelection(
+                SequentialBatchTransportStrategy(), False, "SPARK_NOT_CONFIGURED"
+            )
+        # Keep the optional runtime out of the ordinary import/startup path.
+        from schemabridge.spark import (
+            SparkJdbcPartitionPlanner,
+            SparkJdbcReadPlanFactory,
+            SparkJdbcWritePlanFactory,
+            SparkSessionFactory,
+            SparkTransportSettings,
+            SparkTransportStrategy,
+        )
+        from schemabridge.spark.jdbc import SparkJdbcPlanError
+
+        if not isinstance(self.spark_settings, SparkTransportSettings):
+            raise TypeError("spark_settings must be SparkTransportSettings.")
+        runtime_available = self.spark_runtime_available or SparkSessionFactory.runtime_available
+        if not runtime_available():
+            return TransportStrategySelection(
+                SequentialBatchTransportStrategy(), False, "SPARK_RUNTIME_UNAVAILABLE"
+            )
+        estimate = source_table.estimated_row_count
+        if estimate is None:
+            return TransportStrategySelection(
+                SequentialBatchTransportStrategy(), False, "SOURCE_ROW_ESTIMATE_UNAVAILABLE"
+            )
+        if not self.spark_settings.should_use_spark(estimate):
+            return TransportStrategySelection(
+                SequentialBatchTransportStrategy(), False, "SOURCE_ROW_ESTIMATE_BELOW_THRESHOLD"
+            )
+        if prepared.source_profile is None or prepared.target_profile is None:
+            return TransportStrategySelection(
+                SequentialBatchTransportStrategy(), False, "PROFILE_CONTEXT_UNAVAILABLE"
+            )
+        try:
+            read_plan = SparkJdbcReadPlanFactory.build(prepared.source_profile, source_table)
+            SparkJdbcPartitionPlanner.partition_column(source_table)
+            relation = BatchTransportService.staging_relation(
+                transport_id=UUID(int=0),
+                target_database=target_database,
+                target_schema=target_schema,
+            )
+            SparkJdbcWritePlanFactory.build(
+                prepared.target_profile,
+                BatchTransportService.staging_definition(source_table, relation),
+            )
+            del read_plan
+        except (SparkJdbcPlanError, ValueError, TypeError):
+            return TransportStrategySelection(
+                SequentialBatchTransportStrategy(), False, "SPARK_JDBC_REQUIREMENTS_NOT_MET"
+            )
+        return TransportStrategySelection(
+            SparkTransportStrategy(self.spark_settings), True
+        )
 
     def prepare(
         self,
@@ -302,6 +409,8 @@ class ProfileBoundBatchTransportService:
             timeout_seconds=effective_timeout,
             source_reader=source.connector,
             staging_writer=target.connector,
+            source_profile=source_profile,
+            target_profile=target_profile,
         )
 
     def cleanup_staging(
@@ -339,8 +448,8 @@ class ProfileBoundBatchTransportService:
         except Exception:
             raise BatchTransportError("Managed staging cleanup failed.") from None
 
-    @staticmethod
     def run(
+        self,
         prepared: PreparedBatchTransport,
         *,
         transport_id: UUID,
@@ -348,6 +457,7 @@ class ProfileBoundBatchTransportService:
         target_database: str,
         target_schema: str,
         progress_reporter: BatchProgressReporter | None = None,
+        execution_strategy: TransportExecutionStrategy | None = None,
     ) -> ProfileBoundBatchTransportResult:
         """Run once and prove cleanup before classifying a failure as retryable."""
 
@@ -357,17 +467,26 @@ class ProfileBoundBatchTransportService:
             target_schema=target_schema,
         )
         try:
-            result = BatchTransportService(
+            strategy = execution_strategy or self.select_execution_strategy(
+                prepared,
+                source_table,
+                target_database=target_database,
+                target_schema=target_schema,
+            )
+            if not isinstance(strategy, TransportExecutionStrategy):
+                raise TypeError("execution_strategy must implement TransportExecutionStrategy.")
+            result = strategy.transfer(
                 source_reader=prepared.source_reader,
                 staging_writer=prepared.staging_writer,
-                progress_reporter=progress_reporter,
-            ).transfer(
+                source_profile=getattr(prepared, "source_profile", None),
+                target_profile=getattr(prepared, "target_profile", None),
                 transport_id=transport_id,
                 source_table=source_table,
                 target_database=target_database,
                 target_schema=target_schema,
                 batch_size=prepared.batch_size,
                 timeout_seconds=prepared.timeout_seconds,
+                progress_reporter=progress_reporter,
             )
             return ProfileBoundBatchTransportResult(
                 disposition=BatchTransportDisposition.SUCCEEDED,
@@ -404,4 +523,5 @@ __all__ = [
     "PreparedBatchTransport",
     "ProfileBoundBatchTransportResult",
     "ProfileBoundBatchTransportService",
+    "TransportStrategySelection",
 ]

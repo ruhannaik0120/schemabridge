@@ -28,6 +28,7 @@ from schemabridge.services.batch_transport import (
     ProfileBoundBatchTransportService,
 )
 from schemabridge.transport.base import BatchTransportError
+from schemabridge.transport.strategy import TransportExecutionStrategy
 
 
 TRANSPORT_ID = UUID("12345678-1234-5678-1234-567812345678")
@@ -551,7 +552,7 @@ def test_profile_bound_run_confirms_cleanup_before_allowing_retry() -> None:
         timeout_seconds=10,
     )
 
-    result = ProfileBoundBatchTransportService.run(
+    result = ProfileBoundBatchTransportService(lambda _profile_id: None).run(
         prepared,
         transport_id=TRANSPORT_ID,
         source_table=_table(),
@@ -587,7 +588,7 @@ def test_profile_bound_run_forwards_database_neutral_progress() -> None:
         timeout_seconds=10,
     )
 
-    result = ProfileBoundBatchTransportService.run(
+    result = ProfileBoundBatchTransportService(lambda _profile_id: None).run(
         prepared,
         transport_id=TRANSPORT_ID,
         source_table=_table(estimated_row_count=3),
@@ -601,6 +602,53 @@ def test_profile_bound_run_forwards_database_neutral_progress() -> None:
     assert [
         item.estimated_percent_complete for item in reporter.snapshots
     ] == [66, 100]
+
+
+def test_profile_bound_run_accepts_a_transport_strategy_without_changing_recovery() -> None:
+    writer = Writer()
+    prepared = SimpleNamespace(
+        source_profile_id="source",
+        target_profile_id="target",
+        source_reader=Reader(()),
+        staging_writer=writer,
+        batch_size=2,
+        timeout_seconds=10,
+    )
+
+    class Strategy:
+        strategy_name = "TEST"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def transfer(self, **kwargs):
+            self.calls.append(kwargs)
+            return BatchTransportService(
+                source_reader=kwargs["source_reader"],
+                staging_writer=kwargs["staging_writer"],
+                progress_reporter=kwargs["progress_reporter"],
+            ).transfer(
+                transport_id=kwargs["transport_id"],
+                source_table=kwargs["source_table"],
+                target_database=kwargs["target_database"],
+                target_schema=kwargs["target_schema"],
+                batch_size=kwargs["batch_size"],
+                timeout_seconds=kwargs["timeout_seconds"],
+            )
+
+    strategy = Strategy()
+    assert isinstance(strategy, TransportExecutionStrategy)
+    result = ProfileBoundBatchTransportService(lambda _profile_id: None).run(
+        prepared,
+        transport_id=TRANSPORT_ID,
+        source_table=_table(),
+        target_database="SCHEMABRIDGE_LAB",
+        target_schema="PUBLIC",
+        execution_strategy=strategy,
+    )
+
+    assert result.disposition is BatchTransportDisposition.SUCCEEDED
+    assert len(strategy.calls) == 1
 
 
 def test_profile_bound_run_cleans_staging_when_progress_reporting_fails() -> None:
@@ -623,7 +671,7 @@ def test_profile_bound_run_cleans_staging_when_progress_reporting_fails() -> Non
         timeout_seconds=10,
     )
 
-    result = ProfileBoundBatchTransportService.run(
+    result = ProfileBoundBatchTransportService(lambda _profile_id: None).run(
         prepared,
         transport_id=TRANSPORT_ID,
         source_table=_table(estimated_row_count=1),
@@ -655,7 +703,7 @@ def test_profile_bound_run_marks_failure_uncertain_when_cleanup_fails() -> None:
         timeout_seconds=10,
     )
 
-    result = ProfileBoundBatchTransportService.run(
+    result = ProfileBoundBatchTransportService(lambda _profile_id: None).run(
         prepared,
         transport_id=TRANSPORT_ID,
         source_table=_table(),

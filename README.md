@@ -9,6 +9,7 @@ It is a synchronous, governed batch-migration backend rather than a general stre
 - [Product requirements](docs/PRD.md) — current behavior, scope, workflow, and limitations.
 - [Architecture](docs/ARCHITECTURE.md) — components, request paths, databases, and design decisions.
 - [Setup](docs/SETUP.md) — clean-machine setup, configuration, operation, and troubleshooting.
+- [Automatic Spark transport](docs/SPARK_TRANSPORT.md) — large-table routing, safety boundary, and local verification.
 - [Code guide](docs/CODE_GUIDE.md) — a recommended study order and file-by-file navigation.
 
 ## Architecture at a glance
@@ -34,7 +35,7 @@ The source and target are data-plane systems. The separate control-plane Postgre
 2. Discover canonical source and target metadata.
 3. Generate deterministic, evidence-backed mapping suggestions.
 4. Record human approval or overrides as a new immutable artifact.
-5. Claim a transport attempt, create managed target staging, and load source rows in batches.
+5. Claim a transport attempt, create managed target staging, and load source rows with automatic Spark routing for eligible large PostgreSQL/MySQL tables or bounded connector batches otherwise.
 6. Compile a target-specific transformation preview from the approved plan and recorded staging evidence.
 7. Recompile, verify, claim, and execute the approved statement.
 8. After a confirmed commit, remove SchemaBridge-managed staging and persist cleanup evidence.
@@ -117,7 +118,7 @@ docs/           Product, architecture, setup, and study guides
 ## Current limitations
 
 - Batch transport selects source-reader and staging-writer roles by connector capability, not by vendor name. PostgreSQL, MySQL, and Snowflake currently implement both roles.
-- The transport is synchronous and inserts batches through the connector; it is not a high-volume bulk-file or streaming engine.
+- PostgreSQL and MySQL have an optional, automatically selected Spark JDBC staging path for eligible large tables; Snowflake remains on normal bounded connector batches.
 - Validation compares generated aggregates, not every row.
 - Uncertain remote outcomes require manual investigation.
 - The durable workflow has no authentication, frontend, file ingestion, profiling, or production deployment layer.

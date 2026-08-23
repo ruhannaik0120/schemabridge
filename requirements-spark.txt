@@ -1,0 +1,4 @@
+# Optional distributed runtime for large-table SchemaBridge migrations.
+# Install only on an intentionally configured Spark worker environment.
+-r requirements.txt
+pyspark>=3.5,<4.0

@@ -115,8 +115,12 @@ def get_batch_transport_service(
     """Build the profile-bound source-to-managed-staging boundary."""
 
     from schemabridge.services.batch_transport import ProfileBoundBatchTransportService
+    from schemabridge.spark.config import SparkTransportSettings
 
-    return ProfileBoundBatchTransportService(database_service_factory)
+    return ProfileBoundBatchTransportService(
+        database_service_factory,
+        spark_settings=SparkTransportSettings.from_environment(),
+    )
 
 
 def build_workflow_repository(config):

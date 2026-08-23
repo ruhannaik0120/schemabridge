@@ -5,9 +5,15 @@ from schemabridge.transport.base import (
     StagingTableWriter,
     UnsupportedStagingTypeError,
 )
+from schemabridge.transport.strategy import (
+    SequentialBatchTransportStrategy,
+    TransportExecutionStrategy,
+)
 
 __all__ = [
     "BatchSourceReader",
     "StagingTableWriter",
+    "SequentialBatchTransportStrategy",
+    "TransportExecutionStrategy",
     "UnsupportedStagingTypeError",
 ]

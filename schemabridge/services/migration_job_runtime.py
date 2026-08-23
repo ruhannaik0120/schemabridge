@@ -36,6 +36,7 @@ from schemabridge.services.workflow_orchestration import WorkflowPlanningOrchest
 from schemabridge.services.workflow_persistence import WorkflowPersistenceService
 from schemabridge.services.workflow_transport import WorkflowTransportOrchestrator
 from schemabridge.services.workflow_validation import WorkflowValidationOrchestrator
+from schemabridge.spark.config import SparkTransportSettings
 
 
 def build_migration_job_worker(
@@ -47,7 +48,10 @@ def build_migration_job_worker(
 
     persistence = WorkflowPersistenceService(repository)
     completion = MigrationJobCompletionService(persistence)
-    transport_service = ProfileBoundBatchTransportService(database_service_factory)
+    transport_service = ProfileBoundBatchTransportService(
+        database_service_factory,
+        spark_settings=SparkTransportSettings.from_environment(),
+    )
     execution_service = ProfileBoundMigrationExecutionService(
         database_service_factory
     )
