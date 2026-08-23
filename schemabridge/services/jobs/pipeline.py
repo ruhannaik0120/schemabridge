@@ -43,24 +43,24 @@ from schemabridge.persistence.errors import (
     WorkflowValidationNotReadyError,
     WorkflowValidationOutcomeUncertainError,
 )
-from schemabridge.services.migration_jobs import (
+from schemabridge.services.jobs.lifecycle import (
     MigrationJobCompletionService,
     MigrationJobProgressService,
 )
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
-from schemabridge.services.workflow_execution import (
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.execution import (
     WorkflowExecutionOrchestrator,
     WorkflowExecutionResult,
 )
-from schemabridge.services.workflow_orchestration import (
+from schemabridge.services.workflows.planning import (
     WorkflowPlanningOrchestrator,
     WorkflowPlanningResult,
 )
-from schemabridge.services.workflow_transport import (
+from schemabridge.services.workflows.transport import (
     WorkflowTransportOrchestrator,
     WorkflowTransportResult,
 )
-from schemabridge.services.workflow_validation import (
+from schemabridge.services.workflows.validation import (
     WorkflowValidationOrchestrator,
     WorkflowValidationResult,
 )

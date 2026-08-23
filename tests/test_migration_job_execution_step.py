@@ -1,8 +1,6 @@
 """Verify background jobs reuse approved target execution and cleanup."""
 
 from datetime import timedelta
-from uuid import UUID
-
 import pytest
 
 from schemabridge.models.migration_job import MigrationJobStage, MigrationJobStatus
@@ -12,19 +10,16 @@ from schemabridge.services.migration_execution import (
     TargetExecutionDisposition,
     TargetExecutionResult,
 )
-from schemabridge.services.migration_job_pipeline import MigrationJobExecutionStep
-from schemabridge.services.migration_jobs import MigrationJobCompletionService
+from schemabridge.services.jobs.pipeline import MigrationJobExecutionStep
+from schemabridge.services.jobs.lifecycle import MigrationJobCompletionService
 from schemabridge.target_execution import TargetExecutionRegistry
-from schemabridge.services.workflow_execution import WorkflowExecutionOrchestrator
-from schemabridge.services.workflow_orchestration import WorkflowPlanningOrchestrator
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
-from tests.test_migration_job_repository import JOB_ID
+from schemabridge.services.workflows.execution import WorkflowExecutionOrchestrator
+from schemabridge.services.workflows.planning import WorkflowPlanningOrchestrator
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
+from tests.support.jobs import EXECUTION_ATTEMPT_ID, JOB_ID
 from tests.test_migration_job_staging_step import _context
 from tests.test_workflow_execution_api import FakeExecutor
 from schemabridge.services.batch_transport import BatchTransportDisposition
-
-
-EXECUTION_ATTEMPT_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 
 
 class CleanupFailureTransport:

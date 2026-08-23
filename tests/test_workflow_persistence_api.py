@@ -12,7 +12,7 @@ from schemabridge.api.app import create_app
 from schemabridge.api.config import ApiSettings
 from schemabridge.api.dependencies import get_workflow_repository
 from schemabridge.persistence.config import ControlPlaneConfig
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
 from tests.fakes.workflow_repository import InMemoryWorkflowRepository
 from tests.test_migration_api import _json_table, _workflow_tables
 

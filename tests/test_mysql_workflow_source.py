@@ -14,13 +14,13 @@ from schemabridge.models.metadata import CanonicalType
 from schemabridge.models.transport import TransportRelation
 from schemabridge.transport.base import BatchSourceReader
 from schemabridge.services.database_service import DatabaseExecutionResult
-from schemabridge.services.validation_execution import MigrationValidationExecutionService
-from schemabridge.services.validation_sql import (
+from schemabridge.validation.execution import MigrationValidationExecutionService
+from schemabridge.validation.sql import (
     InvalidTransformationPlanError,
     compile_validation_sql,
 )
-from tests.test_transformation_sql import _approved
-from tests.test_validation_execution import _request
+from tests.support.builders import approved_mapping_plan as _approved
+from tests.support.builders import validation_execution_request as _request
 
 
 def _profile() -> ConnectionProfile:

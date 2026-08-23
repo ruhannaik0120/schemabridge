@@ -6,7 +6,6 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from schemabridge.models.discovery import CoverageStatus, DatabaseObjectType, DiscoveryCoverage, ObjectPersistence, TableMetadata
 from schemabridge.models.mapping import (
     ColumnCompatibility,
     ColumnMappingApproval,
@@ -15,40 +14,11 @@ from schemabridge.models.mapping import (
     TransformationExpression,
     TransformationExpressionType,
 )
-from schemabridge.models.metadata import CanonicalType, ColumnMetadata
-from schemabridge.services.mapping_approval import MappingApprovalService
-from schemabridge.services.schema_mapping import SchemaMappingService
-
-
-def _column(
-    name: str,
-    canonical_type: CanonicalType = CanonicalType.STRING,
-    ordinal: int = 1,
-    *,
-    nullable: bool | None = False,
-) -> ColumnMetadata:
-    return ColumnMetadata(
-        catalog_name="catalog", schema_name="schema", table_name="table", column_name=name,
-        ordinal_position=ordinal, native_type="native", canonical_type=canonical_type,
-        nullable=nullable, character_length=100 if canonical_type is CanonicalType.STRING else None,
-        numeric_precision=None, numeric_scale=None, datetime_precision=None,
-        vendor_metadata={"password": "secret", "safe": "value"},
-    )
-
-
-def _table(name: str, *columns: ColumnMetadata) -> TableMetadata:
-    coverage = DiscoveryCoverage(
-        columns=CoverageStatus.COMPLETE, primary_key=CoverageStatus.COMPLETE,
-        unique_constraints=CoverageStatus.COMPLETE, foreign_keys=CoverageStatus.COMPLETE,
-        check_constraints=CoverageStatus.COMPLETE, comments=CoverageStatus.COMPLETE,
-        estimated_row_count=CoverageStatus.COMPLETE, view_definition=CoverageStatus.NOT_APPLICABLE,
-        partitioning=CoverageStatus.NOT_APPLICABLE, clustering=CoverageStatus.NOT_APPLICABLE,
-    )
-    return TableMetadata(
-        catalog_name="catalog", schema_name="schema", object_name=name, system="test",
-        object_type=DatabaseObjectType.TABLE, persistence=ObjectPersistence.PERMANENT,
-        columns=tuple(columns), coverage=coverage, vendor_metadata={"credential": "secret"},
-    )
+from schemabridge.models.metadata import CanonicalType
+from schemabridge.mapping.approval import MappingApprovalService
+from schemabridge.mapping.suggestions import SchemaMappingService
+from tests.support.builders import mapping_column as _column
+from tests.support.builders import mapping_table as _table
 
 
 def _inputs(source_columns=None, target_columns=None):

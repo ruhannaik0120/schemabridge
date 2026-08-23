@@ -2,7 +2,7 @@
 
 SchemaBridge is a governed PostgreSQL, MySQL, and Snowflake migration backend. It discovers schemas, proposes deterministic column mappings, requires human approval, compiles target-specific SQL, records execution attempts, validates source and target aggregates, and preserves an auditable workflow history.
 
-It is a synchronous, governed batch-migration backend rather than a general streaming platform. After mapping approval, SchemaBridge creates a managed staging table in the selected target, copies source rows into it in bounded batches, and generates the final `INSERT ... SELECT` from that exact table.
+It is a governed batch-migration backend rather than a general streaming platform. Work can run through the synchronous workflow API or durable queued jobs processed by the run-once worker. After mapping approval, SchemaBridge creates a managed staging table in the selected target, loads source rows through automatically selected Spark or bounded connector batches, and generates the final `INSERT ... SELECT` from that exact table.
 
 ## Documentation
 
@@ -35,7 +35,7 @@ The source and target are data-plane systems. The separate control-plane Postgre
 2. Discover canonical source and target metadata.
 3. Generate deterministic, evidence-backed mapping suggestions.
 4. Record human approval or overrides as a new immutable artifact.
-5. Claim a transport attempt, create managed target staging, and load source rows with automatic Spark routing for eligible large PostgreSQL/MySQL tables or bounded connector batches otherwise.
+5. Claim a transport attempt, create managed target staging, and load source rows with automatic Spark routing for eligible large PostgreSQL, MySQL, or Snowflake tables, or bounded connector batches otherwise.
 6. Compile a target-specific transformation preview from the approved plan and recorded staging evidence.
 7. Recompile, verify, claim, and execute the approved statement.
 8. After a confirmed commit, remove SchemaBridge-managed staging and persist cleanup evidence.
@@ -109,16 +109,23 @@ Open Swagger UI at <http://localhost:8000/docs>. See [SETUP.md](docs/SETUP.md) f
 ## Repository layout
 
 ```text
-schemabridge/   Application, domain, connector, and persistence code
-tests/          Credential-free tests and optional integration contracts
-scripts/        Setup, verification, migrations, and demo commands
-docs/           Product, architecture, setup, and study guides
+schemabridge/api/                 FastAPI routes, schemas, adapters, and wiring
+schemabridge/connectors/          PostgreSQL, MySQL, Snowflake, and generic connectors
+schemabridge/mapping/             Schema suggestions, approval, and transformation SQL
+schemabridge/validation/          Validation SQL, execution, reconciliation, and SQL safety
+schemabridge/services/workflows/  Durable workflow orchestration and persistence policy
+schemabridge/services/jobs/       Background-job lifecycle, pipeline, runtime, and worker
+schemabridge/transport/spark/     Automatically selected Spark transport implementation
+schemabridge/persistence/         Control-plane repository, codecs, and migrations
+tests/                            Credential-free tests and optional live contracts
+scripts/                          Setup, verification, migrations, demos, and worker commands
+docs/                             Product, architecture, setup, and study guides
 ```
 
 ## Current limitations
 
 - Batch transport selects source-reader and staging-writer roles by connector capability, not by vendor name. PostgreSQL, MySQL, and Snowflake currently implement both roles.
-- PostgreSQL and MySQL have an optional, automatically selected Spark JDBC staging path for eligible large tables; Snowflake remains on normal bounded connector batches.
+- PostgreSQL, MySQL, and Snowflake have an optional, automatically selected Spark staging path for eligible large tables. PostgreSQL/MySQL use JDBC partitioning; Snowflake uses its dedicated Spark connector when that runtime package is configured.
 - Validation compares generated aggregates, not every row.
 - Uncertain remote outcomes require manual investigation.
 - The durable workflow has no authentication, frontend, file ingestion, profiling, or production deployment layer.

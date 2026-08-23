@@ -1,22 +1,15 @@
 """Verify the repository contract for creating and reading migration jobs."""
 
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from uuid import UUID
 
 import pytest
 
-from schemabridge.models.migration_job import (
-    MigrationJob,
-    MigrationJobStage,
-    MigrationJobStatus,
-)
+from schemabridge.models.migration_job import MigrationJobStage, MigrationJobStatus
 from schemabridge.models.transport import BatchTransportProgress
 from schemabridge.models.workflow import (
-    AuditActorType,
-    MigrationWorkflow,
     MigrationWorkflowStatus,
-    WorkflowRelation,
 )
 from schemabridge.persistence.errors import (
     MigrationJobAlreadyActiveError,
@@ -29,53 +22,9 @@ from schemabridge.persistence.errors import (
 from schemabridge.persistence.config import ControlPlaneConfig
 from schemabridge.persistence.postgresql import PostgreSQLWorkflowRepository
 from tests.fakes.workflow_repository import InMemoryWorkflowRepository
-
-
-NOW = datetime(2026, 8, 16, tzinfo=timezone.utc)
-WORKFLOW_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
-JOB_ID = UUID("11111111-2222-3333-4444-555555555555")
-
-
-def _workflow(*, status=MigrationWorkflowStatus.MAPPING_APPROVED, version=5):
-    return MigrationWorkflow(
-        workflow_id=WORKFLOW_ID,
-        display_name="Background migration",
-        source_profile_id="mysql-source",
-        target_profile_id="snowflake-target",
-        source_relation=WorkflowRelation(
-            catalog_name="source", schema_name="source", object_name="customers", system="mysql"
-        ),
-        target_relation=WorkflowRelation(
-            catalog_name="target", schema_name="public", object_name="customers", system="snowflake"
-        ),
-        status=status,
-        version=version,
-        created_at=NOW,
-        updated_at=NOW,
-        latest_artifact_version=4,
-    )
-
-
-def _job(**overrides):
-    values = {
-        "job_id": JOB_ID,
-        "workflow_id": WORKFLOW_ID,
-        "expected_workflow_version": 5,
-        "source_discovery_artifact_version": 1,
-        "approved_mapping_artifact_version": 4,
-        "source_profile_id": "mysql-source",
-        "target_profile_id": "snowflake-target",
-        "batch_size": 500,
-        "timeout_seconds": 30,
-        "job_fingerprint": "a" * 64,
-        "status": MigrationJobStatus.QUEUED,
-        "stage": MigrationJobStage.QUEUED,
-        "queued_at": NOW,
-        "actor_type": AuditActorType.USER,
-        "idempotency_key": "create-job-1",
-    }
-    values.update(overrides)
-    return MigrationJob(**values)
+from tests.support.jobs import JOB_ID, NOW, WORKFLOW_ID
+from tests.support.jobs import migration_job as _job
+from tests.support.jobs import migration_workflow as _workflow
 
 
 def _repository(workflow=None):

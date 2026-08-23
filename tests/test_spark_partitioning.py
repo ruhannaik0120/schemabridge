@@ -8,12 +8,12 @@ import pytest
 
 from schemabridge.models.connection_profile import ConnectionProfile
 from schemabridge.models.discovery import ConstraintType, KeyConstraintMetadata
-from schemabridge.spark import (
+from schemabridge.transport.spark import (
     SparkJdbcPartitionPlanner,
     SparkJdbcPlanError,
     SparkJdbcReadPlanFactory,
 )
-from tests.test_batch_transport_service import _table
+from tests.support.transport import transport_table as _table
 
 
 def _source():

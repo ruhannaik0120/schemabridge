@@ -7,8 +7,8 @@ from dataclasses import replace
 import pytest
 
 from schemabridge.models.connection_profile import ConnectionProfile
-from schemabridge.spark import SparkJdbcPlanError, SparkJdbcReadPlanFactory
-from tests.test_batch_transport_service import _table
+from schemabridge.transport.spark import SparkJdbcPlanError, SparkJdbcReadPlanFactory
+from tests.support.transport import transport_table as _table
 
 
 def _profile(database_type: str) -> ConnectionProfile:

@@ -10,7 +10,7 @@ from schemabridge.api.app import create_app
 from schemabridge.api.dependencies import get_migration_job_submission_service
 from schemabridge.models.migration_job import MigrationJobStage, MigrationJobStatus
 from schemabridge.models.transport import BatchTransportProgress
-from tests.test_migration_job_repository import NOW, WORKFLOW_ID
+from tests.support.jobs import NOW, WORKFLOW_ID
 from tests.test_migration_job_service import _service
 
 

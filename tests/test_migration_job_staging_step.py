@@ -8,16 +8,16 @@ import pytest
 
 from schemabridge.models.migration_job import MigrationJobStage, MigrationJobStatus
 from schemabridge.models.workflow import AuditActorType, MigrationWorkflowStatus
-from schemabridge.services.migration_job_pipeline import MigrationJobStagingStep
-from schemabridge.services.migration_jobs import (
+from schemabridge.services.jobs.pipeline import MigrationJobStagingStep
+from schemabridge.services.jobs.lifecycle import (
     MigrationJobClaimService,
     MigrationJobCompletionService,
     MigrationJobProgressService,
     MigrationJobSubmissionService,
 )
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
 from tests.fakes.workflow_repository import InMemoryWorkflowRepository
-from tests.test_migration_job_repository import JOB_ID
+from tests.support.jobs import JOB_ID
 from tests.test_workflow_transport import (
     FakeTransport,
     _approved,

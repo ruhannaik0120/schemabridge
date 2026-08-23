@@ -7,17 +7,20 @@ If you are new to SchemaBridge, read the files in this order.
 3. `schemabridge/api/app.py` — how the FastAPI application is assembled.
 4. `schemabridge/api/routes/workflows.py` — the durable HTTP workflow.
 5. `schemabridge/models/workflow.py` — workflow states, artifacts, and audit events.
-6. `schemabridge/services/workflow_orchestration.py` — discovery, mapping, approval, and preview coordination.
-7. `schemabridge/services/workflow_execution.py` — approval-gated execution coordination.
-8. `schemabridge/services/workflow_transport.py` — durable source-to-staging batch coordination.
-9. `schemabridge/services/workflow_validation.py` — validation and reconciliation coordination.
-9. `schemabridge/services/database_service.py` — profile-bound database access.
-10. `schemabridge/services/schema_mapping.py`, `mapping_approval.py`, and `transformation_sql.py` — the deterministic migration logic.
-11. `schemabridge/persistence/repository.py` and `postgresql.py` — the durable control plane.
-12. `schemabridge/connectors/` — concrete PostgreSQL and Snowflake boundaries.
-13. `Dockerfile`, `compose.yaml`, and `scripts/` — packaging and operation.
+6. `schemabridge/services/workflows/planning.py` — discovery, mapping, approval, and preview coordination.
+7. `schemabridge/services/workflows/execution.py` — approval-gated execution coordination.
+8. `schemabridge/services/workflows/transport.py` — durable source-to-staging batch coordination.
+9. `schemabridge/services/workflows/validation.py` — validation and reconciliation coordination.
+10. `schemabridge/services/database_service.py` — profile-bound database access.
+11. `schemabridge/mapping/` — deterministic suggestions, human approval, and transformation SQL.
+12. `schemabridge/validation/` — validation generation, execution, reconciliation, and SQL safety.
+13. `schemabridge/services/jobs/` — queued-job lifecycle, pipeline, runtime assembly, and worker.
+14. `schemabridge/transport/spark/` — automatically selected large-table transport.
+15. `schemabridge/persistence/repository.py` and `postgresql.py` — the durable control plane.
+16. `schemabridge/connectors/` — concrete PostgreSQL, MySQL, and Snowflake boundaries.
+17. `Dockerfile`, `compose.yaml`, and `scripts/` — packaging and operation.
 
-The durable path discovers and approves a PostgreSQL/MySQL-to-Snowflake migration, loads source rows into a managed transient Snowflake staging table in bounded batches, and compiles the final `INSERT ... SELECT` from the stored staging evidence.
+The durable path discovers and approves a migration among PostgreSQL, MySQL, and Snowflake, loads source rows into a managed target staging table through automatic Spark routing or bounded batches, and compiles the final target-dialect `INSERT ... SELECT` from stored staging evidence.
 
 ## A useful mental model
 
@@ -31,7 +34,7 @@ HTTP request
        and workflow repository (local control plane)
 ```
 
-The data plane contains a PostgreSQL or MySQL source and a Snowflake target. The control plane is a separate PostgreSQL database that records decisions and history; it does not carry migrated business rows.
+The data plane contains a PostgreSQL, MySQL, or Snowflake source and target. The control plane is a separate PostgreSQL database that records decisions and history; it does not carry migrated business rows.
 
 ## Where does the application start?
 
@@ -93,11 +96,11 @@ An interview may ask why adapters exist. They prevent HTTP serialization concern
 - **Before reading:** A workflow row is current mutable state; artifacts and audit events are immutable history.
 - **Interview question:** Why store both a current status and an audit trail? Current state supports efficient decisions; append-only events explain how that state was reached.
 
-The legal transition graph is enforced in `schemabridge/services/workflow_persistence.py`, not in the enum itself. Execution attempt types live in `schemabridge/models/execution.py`; validation run types live in `schemabridge/models/workflow_validation.py`.
+The legal transition graph is enforced in `schemabridge/services/workflows/persistence.py`, not in the enum itself. Execution attempt types live in `schemabridge/models/execution.py`; validation run types live in `schemabridge/models/workflow_validation.py`.
 
 ## Where does workflow planning happen?
 
-### `schemabridge/services/workflow_orchestration.py`
+### `schemabridge/services/workflows/planning.py`
 
 - **Purpose:** Coordinates durable source discovery, target discovery, mapping proposal, mapping approval, and transformation preview.
 - **Called by:** Durable workflow routes.
@@ -112,6 +115,7 @@ Discovery crosses several files by design:
 
 - `schemabridge/services/database_service.py` resolves a profile and provides the service boundary.
 - `schemabridge/connectors/postgresql/connector.py` reads PostgreSQL catalog metadata.
+- `schemabridge/connectors/mysql/connector.py` reads MySQL catalog metadata.
 - `schemabridge/connectors/snowflake/connector.py` reads Snowflake metadata.
 - Connector-specific query constants live beside those connectors.
 - `schemabridge/normalizers/` converts driver rows into canonical metadata.
@@ -123,7 +127,7 @@ The workflow orchestrator persists source and target results as separate immutab
 
 ## Where is mapping performed?
 
-### `schemabridge/services/schema_mapping.py`
+### `schemabridge/mapping/suggestions.py`
 
 - **Purpose:** Produces deterministic, explainable column suggestions from canonical source and target metadata.
 - **Called by:** Lower-level migration routes and the planning orchestrator.
@@ -132,7 +136,7 @@ The workflow orchestrator persists source and target results as separate immutab
 - **Before reading:** Matching considers normalized names, token similarity, ordinal proximity, and type/dimension compatibility. A target column is not assigned twice.
 - **Interview question:** How does mapping work without AI? It is a rule-based ranking algorithm whose evidence codes and confidence values are reproducible and testable.
 
-### `schemabridge/services/mapping_approval.py`
+### `schemabridge/mapping/approval.py`
 
 - **Purpose:** Applies human review decisions and produces an approved plan.
 - **Called by:** Both route layers during approval.
@@ -145,20 +149,20 @@ The shapes involved are defined in `schemabridge/models/mapping.py`: suggestions
 
 ## Where is SQL generated?
 
-### `schemabridge/services/transformation_sql.py`
+### `schemabridge/target_execution/` and `schemabridge/mapping/sql.py`
 
-- **Purpose:** Compiles approved mapping expressions into Snowflake `SELECT` or `INSERT ... SELECT` statements.
+- **Purpose:** Compiles approved mapping expressions into target-specific `SELECT` or `INSERT ... SELECT` statements. The Snowflake adapter reuses the established compiler in `mapping/sql.py`; PostgreSQL and MySQL use the shared dialect compiler.
 - **Called by:** Transformation-preview routes and execution orchestration.
 - **Calls:** Mapping models only; it performs no I/O.
-- **Important object:** `SnowflakeTransformationSqlCompiler` plus convenience compile functions.
+- **Important objects:** The registered target adapters, `DialectTransformationCompiler`, and `SnowflakeTransformationSqlCompiler`.
 - **Before reading:** Identifiers are quoted, literal values become bound parameters, expression nesting is bounded, and only approved mapped columns are available.
 - **Interview question:** Why recompile during execution? The orchestrator proves that the executable statement still matches the approved mapping rather than trusting stored or client-provided SQL.
 
-The source relation for the compiled Snowflake statement is the managed Snowflake staging relation recorded by transport evidence. It is not the remote PostgreSQL relation and is not freely chosen by the preview client.
+The source relation for the compiled statement is the managed staging relation recorded by transport evidence in the selected target. It is not the remote source relation and is not freely chosen by the preview client.
 
 ## Where does database execution happen?
 
-### `schemabridge/services/workflow_execution.py`
+### `schemabridge/services/workflows/execution.py`
 
 - **Purpose:** Coordinates approval-gated, durable migration execution.
 - **Called by:** The workflow execution route.
@@ -169,16 +173,16 @@ The source relation for the compiled Snowflake statement is the managed Snowflak
 
 ### `schemabridge/services/migration_execution.py`
 
-- **Purpose:** Enforces the target-profile boundary and sends the generated statement to Snowflake.
+- **Purpose:** Enforces the target-profile boundary before a registered target adapter executes generated SQL.
 - **Called by:** `WorkflowExecutionOrchestrator`.
 - **Calls:** `DatabaseService` and the SQL guard.
 - **Important objects:** `ProfileBoundMigrationExecutionService`, `PreparedMigrationTarget`, and `TargetExecutionResult`.
-- **Before reading:** The target must resolve to Snowflake and have `write_enabled=true`. The client cannot use this service to submit arbitrary SQL through the workflow API.
+- **Before reading:** The target must resolve to the exact registered PostgreSQL, MySQL, or Snowflake profile and have `write_enabled=true`. The client cannot use this service to submit arbitrary SQL through the workflow API.
 - **Interview question:** Why treat some failures as uncertain? A network timeout can occur after the database committed, so an automatic retry could duplicate work.
 
 ## Where is validation performed?
 
-### `schemabridge/services/validation_sql.py`
+### `schemabridge/validation/sql.py`
 
 - **Purpose:** Generates paired read-only aggregate checks from an approved mapping.
 - **Called by:** Validation preview routes and workflow validation.
@@ -186,7 +190,7 @@ The source relation for the compiled Snowflake statement is the managed Snowflak
 - **Before reading:** The checks compare total row count, per-mapping null counts, and per-mapping distinct counts when compatibility is known; this is not a full row-by-row comparison.
 - **Interview question:** Why generate validation SQL rather than accept it from clients? Generated checks keep the validation boundary read-only and tied to the approved plan.
 
-### `schemabridge/services/validation_execution.py`
+### `schemabridge/validation/execution.py`
 
 - **Purpose:** Executes generated source and target checks through separately resolved services.
 - **Called by:** Lower-level validation execution and workflow validation.
@@ -194,7 +198,7 @@ The source relation for the compiled Snowflake statement is the managed Snowflak
 - **Before reading:** Every validation statement is independently guarded and must return exactly one aggregate row.
 - **Interview question:** Why use separate services? Source and target have different vendors, profiles, permissions, and failure domains.
 
-### `schemabridge/services/workflow_validation.py`
+### `schemabridge/services/workflows/validation.py`
 
 - **Purpose:** Adds workflow preconditions, durable claims, artifacts, audit events, and recovery classification around validation.
 - **Called by:** The workflow validation route.
@@ -205,7 +209,7 @@ The source relation for the compiled Snowflake statement is the managed Snowflak
 
 ## Where is reconciliation performed?
 
-### `schemabridge/services/reconciliation.py`
+### `schemabridge/validation/reconciliation.py`
 
 - **Purpose:** Compares the source and target aggregate metrics and constructs the final migration validation report.
 - **Called by:** Validation execution.
@@ -232,7 +236,7 @@ The source relation for the compiled Snowflake statement is the managed Snowflak
 - **Before reading:** Transactions combine version checks, state changes, artifact/event insertion, and idempotency results. Row locks serialize competing mutations.
 - **Interview question:** How is optimistic concurrency enforced? The caller supplies an expected version and the repository rejects a stale update instead of silently overwriting newer state.
 
-### `schemabridge/services/workflow_persistence.py`
+### `schemabridge/services/workflows/persistence.py`
 
 - **Purpose:** Applies legal transition rules and turns repository primitives into workflow operations.
 - **Called by:** Planning, execution, validation, and direct persistence routes.
@@ -263,7 +267,7 @@ Artifacts are rows in control-plane PostgreSQL, created by the repository using 
 - **Calls:** Demo, MySQL, PostgreSQL, Snowflake, or SQL Server connector constructors according to the profile.
 - **Interview question:** Why lazy imports? A PostgreSQL-only process should not fail because an unused optional database driver is unavailable.
 
-Concrete connectors own driver-specific connection, discovery, execution, rollback, and cleanup behavior. `schemabridge/connectors/base.py` defines their common boundary. The durable migration execution path specifically requires a Snowflake target even though the generic factory contains additional connectors.
+Concrete connectors own driver-specific connection, discovery, execution, rollback, and cleanup behavior. `schemabridge/connectors/base.py` defines their common boundary. Durable target support additionally requires a registered target execution adapter; PostgreSQL, MySQL, and Snowflake currently provide one.
 
 ## Where are credentials and profile settings loaded?
 
@@ -294,6 +298,10 @@ Concrete connectors own driver-specific connection, discovery, execution, rollba
 - `0003_workflow_validation.sql` adds validation runs and validation-related state support.
 - `0004_workflow_transport.sql` adds staging-load attempts, states, and evidence support.
 - `0005_staging_cleanup.sql` allows immutable post-commit staging-cleanup evidence.
+- `0006_background_migration_jobs.sql` adds durable queued migration jobs.
+- `0007_single_active_migration_job.sql` prevents multiple active jobs per workflow.
+- `0008_migration_job_review_status.sql` records review-required job outcomes.
+- `0009_migration_job_batch_progress.sql` persists database-neutral staging progress.
 - `schemabridge/persistence/migrations.py` discovers files, verifies checksums, obtains an advisory lock, and applies pending migrations.
 - `scripts/migrate_control_plane.py` is the command-line entry point.
 - `Dockerfile` packages the FastAPI process using the pinned API dependency lock.

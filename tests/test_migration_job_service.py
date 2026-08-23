@@ -18,16 +18,17 @@ from schemabridge.persistence.errors import (
     WorkflowOperationUnavailableError,
     WorkflowStaleArtifactReferenceError,
 )
-from schemabridge.services.migration_jobs import (
+from schemabridge.services.jobs.lifecycle import (
     MigrationJobClaimService,
     MigrationJobCompletionService,
     MigrationJobProgressService,
     MigrationJobSubmissionService,
 )
 from schemabridge.persistence.errors import MigrationJobTransitionError
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
 from tests.fakes.workflow_repository import InMemoryWorkflowRepository
-from tests.test_migration_job_repository import JOB_ID, NOW, WORKFLOW_ID, _workflow
+from tests.support.jobs import JOB_ID, NOW, WORKFLOW_ID
+from tests.support.jobs import migration_workflow as _workflow
 
 
 SECOND_JOB_ID = UUID("22222222-3333-4444-5555-666666666666")

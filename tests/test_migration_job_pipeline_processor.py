@@ -9,23 +9,23 @@ from schemabridge.services.migration_execution import (
     TargetExecutionDisposition,
     TargetExecutionResult,
 )
-from schemabridge.services.migration_job_pipeline import (
+from schemabridge.services.jobs.pipeline import (
     MigrationJobExecutionStep,
     MigrationJobPipelineProcessor,
     MigrationJobValidationStep,
 )
-from schemabridge.services.migration_job_worker import MigrationJobWorker
-from schemabridge.services.migration_jobs import (
+from schemabridge.services.jobs.worker import MigrationJobWorker
+from schemabridge.services.jobs.lifecycle import (
     MigrationJobClaimService,
     MigrationJobCompletionService,
 )
 from schemabridge.target_execution import TargetExecutionRegistry
-from schemabridge.services.validation_sql import compile_validation_sql
-from schemabridge.services.workflow_execution import WorkflowExecutionOrchestrator
-from schemabridge.services.workflow_orchestration import WorkflowPlanningOrchestrator
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
-from schemabridge.services.workflow_validation import WorkflowValidationOrchestrator
-from tests.test_migration_job_execution_step import EXECUTION_ATTEMPT_ID
+from schemabridge.validation.sql import compile_validation_sql
+from schemabridge.services.workflows.execution import WorkflowExecutionOrchestrator
+from schemabridge.services.workflows.planning import WorkflowPlanningOrchestrator
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.validation import WorkflowValidationOrchestrator
+from tests.support.jobs import EXECUTION_ATTEMPT_ID
 from tests.test_migration_job_staging_step import _context
 from tests.test_workflow_execution_api import FakeExecutor
 from tests.test_workflow_validation_api import FakeValidationExecutor

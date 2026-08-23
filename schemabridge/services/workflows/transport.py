@@ -39,7 +39,7 @@ from schemabridge.services.batch_transport import (
     BatchTransportService,
     ProfileBoundBatchTransportResult,
 )
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
 from schemabridge.transport.base import BatchProgressReporter
 
 

@@ -7,7 +7,7 @@ import pytest
 from schemabridge.models.connection_profile import ConnectionProfile
 from schemabridge.models.metadata import CanonicalType
 from schemabridge.models.transport import StagingColumn, StagingTableDefinition, TransportRelation
-from schemabridge.spark import (
+from schemabridge.transport.spark import (
     SparkJdbcDataFrameWriter,
     SparkJdbcPlanError,
     SparkJdbcWritePlanFactory,

@@ -10,7 +10,7 @@ from schemabridge.services.migration_execution import (
     PreparedMigrationTarget,
     TargetExecutionDisposition,
 )
-from schemabridge.services.transformation_sql import (
+from schemabridge.mapping.sql import (
     InvalidTransformationPlanError,
     SnowflakeTransformationSqlCompiler,
 )
@@ -21,7 +21,7 @@ from schemabridge.target_execution import (
     TargetExecutionRegistry,
     TargetTransformationCompiler,
 )
-from tests.test_transformation_sql import _approved
+from tests.support.builders import approved_mapping_plan as _approved
 
 
 STAGING = TransportRelation(

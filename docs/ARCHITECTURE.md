@@ -2,7 +2,7 @@
 
 ## System context
 
-SchemaBridge is a synchronous FastAPI backend. The HTTP layer validates commands, orchestration services enforce workflow policy, domain services generate deterministic artifacts, and a repository stores durable state in a control-plane PostgreSQL database.
+SchemaBridge is a FastAPI backend with synchronous workflow endpoints and durable queued jobs processed by a run-once worker. The HTTP layer validates commands, orchestration services enforce workflow policy, domain services generate deterministic artifacts, and a repository stores durable state in a control-plane PostgreSQL database.
 
 The database-operation path is:
 
@@ -57,9 +57,11 @@ These paths meet in the orchestrators. Remote database work is performed outside
 |---|---|---|
 | Application | `schemabridge/api/app.py`, `api/dependencies.py` | Build FastAPI, own application lifecycle, and wire services. |
 | Transport | `api/routes/`, `api/schemas/`, `api/adapters/` | Validate HTTP requests, map transport values to domain values, and translate stable errors. |
-| Orchestration | `services/workflow_orchestration.py`, `workflow_transport.py`, `workflow_execution.py`, `workflow_validation.py` | Enforce workflow state, artifact, idempotency, and remote-operation rules. |
-| Domain services | `services/schema_mapping.py`, `mapping_approval.py`, `transformation_sql.py`, `validation_sql.py`, `reconciliation.py` | Perform deterministic mapping, approval, SQL compilation, and result comparison. |
+| Workflow services | `services/workflows/` | Enforce workflow state, artifact, idempotency, transport, execution, and validation rules. |
+| Background jobs | `services/jobs/` | Submit, claim, process, and finish durable queued migrations. |
+| Domain logic | `mapping/`, `validation/` | Perform deterministic mapping, approval, SQL compilation, validation execution, and result comparison. |
 | Database boundary | `services/database_service.py`, `profile_registry.py`, `connectors/` | Resolve named profiles, apply profile limits, and call vendor drivers. |
+| Data transport | `services/batch_transport.py`, `transport/` | Run bounded batches or the automatically selected Spark transport into managed staging. |
 | Domain models | `models/` | Define immutable workflow, mapping, execution, validation, and metadata contracts. |
 | Persistence | `persistence/` | Serialize artifacts and implement transactional workflow storage. |
 | SQL guard | `validation/sql_guard.py` | Reject unsupported, multi-statement, commented, or structurally unsafe generated SQL. |
@@ -91,7 +93,7 @@ The primary stateful API is under `/api/v1/migrations/workflows`:
 | `POST .../{workflow_id}/discover-target` | Discover and persist target metadata. |
 | `POST .../{workflow_id}/mapping-proposals` | Generate and persist mapping suggestions. |
 | `POST .../{workflow_id}/mapping-approvals` | Apply reviewer decisions and persist approval. |
-| `POST .../{workflow_id}/load-staging` | Create managed staging and copy source rows in bounded batches. |
+| `POST .../{workflow_id}/load-staging` | Create managed staging and load source rows through automatic Spark routing or bounded batches. |
 | `POST .../{workflow_id}/transformation-previews` | Compile and persist transformation SQL. |
 | `POST .../{workflow_id}/execute` | Claim and execute an approved target operation. |
 | `POST .../{workflow_id}/validate` | Claim, execute, and persist paired validation. |
@@ -125,7 +127,7 @@ It is not the migration source database. Keeping it separate lets SchemaBridge a
 
 The source profile is selected by the workflow's `source_profile_id`; the target profile is selected by `target_profile_id`. PostgreSQL, MySQL, and Snowflake can each provide discovery, bounded extraction, staging writes, target execution, and validation dialect support. The durable write path checks that the profile database exactly matches the workflow target and that `write_enabled=true`. SchemaBridge does not persist data-plane credentials or business rows.
 
-The transport orchestrator creates a uniquely named transient staging table and persists counts and relation identity without business rows. Eligible large PostgreSQL/MySQL tables use partitioned Spark JDBC reads and append only to that staging table; all other sources use bounded connector batches. The generated `INSERT ... SELECT` reads the exact staging relation rehydrated from that evidence.
+The transport orchestrator creates a uniquely named managed staging table and persists counts and relation identity without business rows. Eligible large PostgreSQL/MySQL sources use partitioned Spark JDBC reads; eligible Snowflake endpoints use the dedicated Snowflake Spark connector. Spark always appends only to the managed staging table, and ineligible workflows use bounded connector batches. The generated `INSERT ... SELECT` reads the exact staging relation rehydrated from that evidence.
 
 ## Workflow path details
 
@@ -250,4 +252,4 @@ This cannot provide a distributed transaction. It provides an explicit record of
 
 New generic connectors implement `DatabaseConnector`, export `Connector`, and register a module path in `ConnectorFactory`. To participate in batch transport, a connector independently implements `BatchSourceReader`, `StagingTableWriter`, or both. The source and staging roles are selected by each workflow's profile IDs and checked by capability; they are not inferred from `db_type` or the connector class name.
 
-Transport and validation select roles by connector capability. PostgreSQL and MySQL can currently fill the durable source role, while Snowflake remains the only final target. Adding a new final target still requires a target-specific transformation compiler, execution adapter, SQL safety policy, staging writer, and validation implementation.
+Transport, execution, and validation select roles by connector capability. PostgreSQL, MySQL, and Snowflake can currently fill both durable source and final-target roles. Adding another final target still requires a target-specific transformation compiler, execution adapter, SQL safety policy, staging writer, and validation implementation.

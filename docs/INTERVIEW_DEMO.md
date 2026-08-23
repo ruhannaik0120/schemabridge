@@ -55,7 +55,7 @@ Describe three outcomes:
 
 ### Minute 6–7: limitations
 
-State the evidence precisely: a live five-row PostgreSQL-to-Snowflake workflow passed using automatic managed staging. SchemaBridge created the transient table, loaded three batches, committed five target inserts, passed all 13 aggregate checks, removed managed staging, and exact replays left the target at five rows. Separately, PostgreSQL and MySQL each have a live three-row Spark JDBC-to-staging proof with two partitions and matching row counts. This proves controlled local paths, not production scale. Validation is aggregate-based. Authentication, frontend, distributed Spark-cluster operations, Snowflake Spark support, advanced profiling, and automatic uncertain-outcome resolution are not implemented.
+State the evidence precisely: a live five-row PostgreSQL-to-Snowflake workflow passed using automatic managed staging. SchemaBridge created the transient table, loaded three batches, committed five target inserts, passed all 13 aggregate checks, removed managed staging, and exact replays left the target at five rows. Separately, PostgreSQL and MySQL each have a live three-row Spark JDBC-to-staging proof with two partitions and matching row counts. The Snowflake Spark transport and opt-in proof harness are implemented, but that proof has not been run with live non-production credentials. This proves controlled local paths, not production scale. Validation is aggregate-based. Authentication, frontend, managed distributed Spark-cluster operations, advanced profiling, and automatic uncertain-outcome resolution are not implemented.
 
 ## Architecture talking points
 
@@ -80,7 +80,7 @@ A lost response can leave the target outcome unknown. Automatic retry could dupl
 Not through the durable workflow. SchemaBridge recompiles and verifies the persisted approved plan, and the execution request contains artifact references rather than SQL.
 
 **How is validation performed?**  
-SchemaBridge generates paired, parameterized PostgreSQL and Snowflake aggregate queries and reconciles row, null, and distinct counts using the persisted approved mapping.
+SchemaBridge generates paired, parameterized source- and target-dialect aggregate queries and reconciles row, null, and distinct counts using the persisted approved mapping.
 
 **Is it production-ready?**  
-No production-readiness claim is made. The core safety model and local packaging are implemented, but real-environment security, operations, authentication, monitoring, and Snowflake smoke evidence remain deployment work.
+No production-readiness claim is made. The core safety model and local packaging are implemented, but real-environment security, operations, authentication, monitoring, managed Spark-cluster deployment, and live Snowflake Spark evidence remain deployment work.

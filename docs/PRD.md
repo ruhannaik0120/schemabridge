@@ -2,7 +2,7 @@
 
 ## 1. Product overview
 
-SchemaBridge is a governed backend for planning, approving, executing, and validating PostgreSQL/MySQL-to-Snowflake migration workflows. It exposes FastAPI endpoints, stores durable workflow evidence in a separate PostgreSQL control plane, resolves database credentials through named runtime profiles, and delegates database operations to connector implementations.
+SchemaBridge is a governed backend for planning, approving, executing, and validating migrations among PostgreSQL, MySQL, and Snowflake. It exposes FastAPI endpoints, stores durable workflow evidence in a separate PostgreSQL control plane, resolves database credentials through named runtime profiles, and delegates database operations to connector implementations.
 
 The current product is deterministic Python code. Mapping, SQL generation, execution checks, and validation do not use AI, an MCP server, or an external ticketing system.
 
@@ -14,60 +14,54 @@ SchemaBridge separates those responsibilities into durable steps. Each important
 
 ## 3. Goals
 
-- Discover PostgreSQL or MySQL source metadata and Snowflake target metadata through named profiles.
+- Discover PostgreSQL, MySQL, or Snowflake source and target metadata through named profiles.
 - Convert vendor metadata into canonical immutable models.
 - Produce deterministic and explainable one-to-one mapping suggestions.
 - Require explicit human approval before write-capable execution.
-- Compile parameterized Snowflake SQL from approved mappings.
+- Compile parameterized target-specific SQL from approved mappings.
 - Persist workflow state, artifacts, execution attempts, validation runs, and audit events.
 - Prevent stale commands, unsafe generated SQL, duplicate remote work, and silent retries after uncertain outcomes.
-- Generate and reconcile paired PostgreSQL and Snowflake validation queries.
+- Generate and reconcile paired source/target validation queries for supported dialects.
 - Keep credentials and raw driver errors out of workflow artifacts and public API errors.
 
 ## 4. Non-goals
 
 The current repository does not provide:
 
-- a frontend, authentication system, background worker, or hosted production deployment;
+- a frontend, authentication system, managed worker service, or hosted production deployment;
 - file ingestion, change-data capture, or streaming transport;
-- Jira, MCP, Excel, HTML-reporting, AWS, or Snowflake Spark integration;
+- Jira, MCP, Excel, HTML-reporting, AWS, or a managed Spark-cluster deployment;
 - AI-based mapping, fuzzy profiling, or automatic resolution of ambiguous mappings;
 - full row-by-row data comparison;
 - automatic recovery from an uncertain remote database outcome.
 
 ## 5. Current supported scope
 
-The durable workflow is designed around:
+The durable workflow supports PostgreSQL, MySQL, and Snowflake as source or final target systems. Each implements discovery, bounded extraction, managed staging, target execution, and validation dialect capabilities. A separate PostgreSQL control plane stores workflow records. The connector factory also contains demo and generic SQL Server implementations; SQL Server does not currently implement the complete durable workflow capability set.
 
-- **source system:** PostgreSQL or MySQL, for schema discovery, bounded extraction, and source-side validation;
-- **target system:** Snowflake, for target discovery, approved transformation execution, and target-side validation;
-- **control plane:** a separate PostgreSQL database that stores workflow records.
-
-The connector factory also contains demo and SQL Server implementations. SQL Server remains a reusable lower-level connector, while MySQL now implements the discovery, batch-reader, and validation capabilities required on the durable source side. The durable execution path still explicitly requires a Snowflake target.
-
-After approval, SchemaBridge creates a managed transient Snowflake staging table and copies PostgreSQL or MySQL rows into it in bounded batches. Transformation execution produces a Snowflake `INSERT ... SELECT` whose source is derived from the persisted staging-load evidence rather than supplied by the client.
+After approval, SchemaBridge creates a managed staging table in the selected target and copies source rows through bounded connector batches or the automatically selected Spark strategy. Transformation execution produces a target-specific `INSERT ... SELECT` whose source is derived from persisted staging-load evidence rather than supplied by the client.
 
 ## 6. Source and target systems
 
 Workflows persist profile identifiers, not credentials. At runtime, `ProfileRegistry` parses `DB_PROFILES_JSON`, and `DatabaseService` resolves the selected immutable profile through `ConnectorFactory`.
 
-The PostgreSQL or MySQL source profile may be read-only. The Snowflake target profile must match the workflow target database and must set `write_enabled=true` before migration execution. Validation remains read-only and selects generated SQL from connector-advertised dialect capabilities.
+The source profile may be read-only. Any target profile must match the workflow target database and set `write_enabled=true` before staging or migration execution. Validation remains read-only and selects generated SQL from connector-advertised dialect capabilities.
 
 ## 7. End-to-end workflow
 
 1. Create a durable workflow in `DRAFT`.
-2. Discover the source PostgreSQL or MySQL relation.
-3. Discover the target Snowflake relation.
+2. Discover the selected source relation.
+3. Discover the selected target relation.
 4. Persist both discovery artifacts and enter `DISCOVERED`.
 5. Generate a deterministic mapping proposal.
 6. Record explicit reviewer decisions and persist the approved mapping.
-7. Claim a durable transport attempt, create managed Snowflake staging, and copy source rows in bounded batches.
+7. Claim a durable transport attempt, create managed target staging, and copy source rows through the selected transport strategy.
 8. Persist row-free staging-load evidence and enter `STAGED`.
-9. Compile and persist a Snowflake transformation preview from that staging evidence.
+9. Compile and persist a target-specific transformation preview from that staging evidence.
 10. Execute an approved `INSERT ... SELECT` through the exact target profile.
 11. Persist execution evidence and classify the remote outcome.
 12. After a confirmed commit, remove the exact managed staging table and persist cleanup evidence.
-13. Compile paired PostgreSQL and Snowflake validation queries.
+13. Compile paired source and target validation queries.
 14. Execute both read-only queries and reconcile their aggregate metrics.
 15. Persist the validation report and finish as validated, review-required, or recovery-required.
 
@@ -104,7 +98,7 @@ Artifacts use canonical JSON bytes, a schema version, a monotonically increasing
 
 ## 10. Schema discovery
 
-`DatabaseService.get_table_metadata` calls the connector bound to a named profile. PostgreSQL and Snowflake discovery connectors run fixed catalog queries and normalize the results into canonical schemas, objects, columns, constraints, and coverage information.
+`DatabaseService.get_table_metadata` calls the connector bound to a named profile. PostgreSQL, MySQL, and Snowflake discovery connectors run controlled catalog queries and normalize the results into canonical schemas, objects, columns, constraints, and coverage information.
 
 Discovery errors are translated into stable application errors. Driver-controlled text, credentials, and connection details are not returned through the public workflow API.
 
@@ -122,7 +116,7 @@ Pending decisions prevent workflow execution. The approval artifact is the durab
 
 ## 13. Transformation compilation
 
-`SnowflakeTransformationSqlCompiler` renders either a read-only `SELECT` preview or an `INSERT_SELECT` statement. Identifiers are quoted, literal values become bound parameters, recursion depth is limited, and only modeled transformation expression types are supported.
+The registered target compiler renders either a read-only `SELECT` preview or an `INSERT_SELECT` statement for PostgreSQL, MySQL, or Snowflake. Identifiers are quoted, literal values become bound parameters, recursion depth is limited, and only modeled transformation expression types are supported.
 
 The execution path accepts no client-provided SQL. It rehydrates the approved mapping, recompiles the expected statement, and requires exact equality with the persisted preview before any target call.
 
@@ -130,10 +124,10 @@ The execution path accepts no client-provided SQL. It rehydrates the approved ma
 
 `WorkflowExecutionOrchestrator` verifies workflow state, current artifact versions, mapping approval, target profile identity, and the generated statement. `ProfileBoundMigrationExecutionService` then requires:
 
-- a Snowflake workflow target;
+- a registered workflow target with execution capability;
 - the exact configured target database;
 - a resolved target profile with `write_enabled=true`;
-- a compiler-produced Snowflake `INSERT_SELECT`;
+- a compiler-produced target-dialect `INSERT_SELECT`;
 - SQL accepted by the structural SQL guard.
 
 Before the remote call, the orchestrator creates a durable execution claim. Concurrent callers cannot independently acquire the same attempt. Completion stores sanitized evidence rather than raw connector output.
@@ -142,7 +136,7 @@ After a confirmed commit, the orchestrator removes only the exact managed `SB_ST
 
 ## 15. Validation
 
-Validation is a separate post-execution operation. `compile_validation_sql` generates one PostgreSQL query and one Snowflake query containing:
+Validation is a separate post-execution operation. `compile_validation_sql` generates one source-dialect query and one target-dialect query containing:
 
 - total row count;
 - per-mapping null counts;
@@ -175,7 +169,7 @@ A mismatch leads to `VALIDATION_REVIEW_REQUIRED`; it is not treated as proof tha
 - validation runs;
 - ordered audit events.
 
-Migrations `0001` through `0005` create and extend this model. Migration `0004` adds durable source-to-staging transport claims, and migration `0005` adds cleanup evidence support. Migration files are checksum-verified and applied explicitly by `scripts.migrate_control_plane`; application startup does not run migrations.
+Migrations `0001` through `0009` create and extend this model. Migrations `0004` and `0005` add durable transport claims and staging cleanup evidence; `0006` through `0009` add background migration jobs, single-active-job enforcement, review outcomes, and persisted batch progress. Migration files are checksum-verified and applied explicitly by `scripts.migrate_control_plane`; application startup does not run migrations.
 
 ## 18. Idempotency
 
@@ -220,9 +214,9 @@ Validation uses the same principle and enters `VALIDATION_RECOVERY_REQUIRED` whe
 - Live verification has covered one five-row PostgreSQL-to-Snowflake workflow with automatic managed staging, committed execution, aggregate validation, exact replay, and post-commit staging cleanup; production scale and failure recovery have not been live-tested.
 - Batch transport is synchronous and is not optimized as a bulk-file or streaming engine.
 - Validation compares aggregates rather than every row.
-- Production execution currently supports only Snowflake as the target.
+- PostgreSQL/MySQL Spark staging has local live proof coverage; Snowflake Spark has an opt-in harness but still requires live non-production credential verification.
 - There is no authentication or authorization layer around the HTTP API.
-- Operations are synchronous; there is no worker queue.
+- The repository includes durable queued jobs and a run-once local worker, but no continuously hosted worker service or distributed scheduler.
 - Uncertain outcomes require manual investigation.
 - Docker Compose is statically validated, but the latest verification does not claim a successful image build or running container health check.
 
@@ -231,8 +225,8 @@ Validation uses the same principle and enters `VALIDATION_RECOVERY_REQUIRED` whe
 The following are possible future additions, not current functionality:
 
 - authenticated users and role-based approval;
-- a background execution worker and operational monitoring;
-- bulk-file transport and asynchronous workers for larger datasets;
+- a continuously hosted worker deployment and operational monitoring;
+- bulk-file transport for larger datasets;
 - documented manual recovery workflows and operator tooling;
 - additional durable source/target connector support;
 - stronger deployment hardening and live environment evidence;

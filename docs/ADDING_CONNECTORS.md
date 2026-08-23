@@ -44,7 +44,7 @@ validation dialect. PostgreSQL, MySQL, and Snowflake currently meet these
 requirements. SQL Server remains a generic query connector only.
 
 Final targets are registered in `schemabridge.api.dependencies` and in
-`schemabridge.services.migration_job_runtime`, so the FastAPI workflow and the
+`schemabridge.services.jobs.runtime`, so the FastAPI workflow and the
 background worker use the same target capabilities.
 
 ## Bounded transport extensions

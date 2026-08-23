@@ -44,7 +44,7 @@ from schemabridge.persistence.errors import (
     WorkflowStaleArtifactReferenceError,
 )
 from schemabridge.persistence.serialization import request_hash
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
 from schemabridge.models.transport import TransportRelation
 from schemabridge.target_execution import TargetExecutionRegistry
 

@@ -17,8 +17,8 @@ from schemabridge.models.validation import MigrationValidationExecutionReport, M
 from schemabridge.models.mapping import SqlDialect
 from schemabridge.persistence.errors import WorkflowPersistenceError
 from schemabridge.services.migration_execution import TargetExecutionDisposition, TargetExecutionResult
-from schemabridge.services.reconciliation import reconcile_validation_results
-from schemabridge.services.validation_sql import compile_validation_sql
+from schemabridge.validation.reconciliation import reconcile_validation_results
+from schemabridge.validation.sql import compile_validation_sql
 from schemabridge.target_execution import TargetExecutionAdapter, TargetExecutionRegistry
 from tests.fakes.workflow_repository import InMemoryWorkflowRepository
 from tests.test_workflow_execution_api import FakeExecutor, _execution_payload, _ready

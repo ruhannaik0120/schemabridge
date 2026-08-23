@@ -1,10 +1,10 @@
 """Verify production assembly for the one-shot local migration-job worker."""
 
-from schemabridge.services.migration_job_pipeline import (
+from schemabridge.services.jobs.pipeline import (
     MigrationJobPipelineProcessor,
 )
-from schemabridge.services.migration_job_runtime import build_migration_job_worker
-from schemabridge.services.migration_job_worker import MigrationJobWorker
+from schemabridge.services.jobs.runtime import build_migration_job_worker
+from schemabridge.services.jobs.worker import MigrationJobWorker
 from tests.fakes.workflow_repository import InMemoryWorkflowRepository
 
 

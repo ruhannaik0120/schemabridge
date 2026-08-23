@@ -29,8 +29,8 @@ from schemabridge.services.batch_transport import (
     BatchTransportDisposition,
     ProfileBoundBatchTransportResult,
 )
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
-from schemabridge.services.workflow_transport import WorkflowTransportOrchestrator
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.transport import WorkflowTransportOrchestrator
 from schemabridge.target_execution import TargetExecutionRegistry
 from tests.fakes.workflow_repository import InMemoryWorkflowRepository
 from tests.test_workflow_orchestration_api import (

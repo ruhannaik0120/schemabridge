@@ -11,8 +11,8 @@ import pytest
 from schemabridge.connectors.snowflake.connector import SnowflakeConnector
 from schemabridge.models.connection_profile import ConnectionProfile
 from schemabridge.services.batch_transport import BatchTransportService
-from schemabridge.spark import SparkTransportSettings, SparkTransportStrategy
-from tests.test_batch_transport_service import _table
+from schemabridge.transport.spark import SparkTransportSettings, SparkTransportStrategy
+from tests.support.transport import transport_table as _table
 
 
 def _environment() -> dict[str, str]:

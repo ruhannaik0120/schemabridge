@@ -28,8 +28,8 @@ from schemabridge.services.migration_execution import (
     TargetExecutionDisposition,
     TargetExecutionResult,
 )
-from schemabridge.services.workflow_execution import WorkflowExecutionOrchestrator
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.execution import WorkflowExecutionOrchestrator
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
 from schemabridge.target_execution import (
     SnowflakeTargetExecutionAdapter,
     SnowflakeTargetTransformationCompiler,

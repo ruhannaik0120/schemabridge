@@ -8,7 +8,12 @@ individual business rows.
 
 from decimal import Decimal
 
-from schemabridge.models.validation import *
+from schemabridge.models.validation import (
+    MigrationValidationReport,
+    MigrationValidationStatus,
+    ValidationCheckResult,
+    ValidationStatus,
+)
 
 
 def _count(value):
@@ -78,12 +83,8 @@ def reconcile_validation_results(
             )
         )
 
-    matched_count = sum(
-        item.status is ValidationStatus.MATCH for item in results
-    )
-    mismatched_count = sum(
-        item.status is ValidationStatus.MISMATCH for item in results
-    )
+    matched_count = sum(item.status is ValidationStatus.MATCH for item in results)
+    mismatched_count = sum(item.status is ValidationStatus.MISMATCH for item in results)
     unavailable_count = len(results) - matched_count - mismatched_count
     return MigrationValidationReport(
         source_table=source_sql.relation,

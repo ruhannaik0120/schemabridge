@@ -5,38 +5,38 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from schemabridge.services.batch_transport import ProfileBoundBatchTransportService
-from schemabridge.services.mapping_approval import MappingApprovalService
+from schemabridge.mapping.approval import MappingApprovalService
 from schemabridge.services.migration_execution import (
     ProfileBoundMigrationExecutionService,
 )
-from schemabridge.services.migration_job_pipeline import (
+from schemabridge.services.jobs.pipeline import (
     MigrationJobExecutionStep,
     MigrationJobPipelineProcessor,
     MigrationJobStagingStep,
     MigrationJobValidationStep,
 )
-from schemabridge.services.migration_job_worker import MigrationJobWorker
-from schemabridge.services.migration_jobs import (
+from schemabridge.services.jobs.worker import MigrationJobWorker
+from schemabridge.services.jobs.lifecycle import (
     MigrationJobClaimService,
     MigrationJobCompletionService,
 )
-from schemabridge.services.schema_mapping import SchemaMappingService
+from schemabridge.mapping.suggestions import SchemaMappingService
 from schemabridge.target_execution import (
     MySqlTargetExecutionAdapter,
     PostgreSqlTargetExecutionAdapter,
     SnowflakeTargetExecutionAdapter,
     TargetExecutionRegistry,
 )
-from schemabridge.services.validation_execution import (
+from schemabridge.validation.execution import (
     MigrationValidationExecutionService,
 )
-from schemabridge.services.validation_sql import compile_validation_sql
-from schemabridge.services.workflow_execution import WorkflowExecutionOrchestrator
-from schemabridge.services.workflow_orchestration import WorkflowPlanningOrchestrator
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
-from schemabridge.services.workflow_transport import WorkflowTransportOrchestrator
-from schemabridge.services.workflow_validation import WorkflowValidationOrchestrator
-from schemabridge.spark.config import SparkTransportSettings
+from schemabridge.validation.sql import compile_validation_sql
+from schemabridge.services.workflows.execution import WorkflowExecutionOrchestrator
+from schemabridge.services.workflows.planning import WorkflowPlanningOrchestrator
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.transport import WorkflowTransportOrchestrator
+from schemabridge.services.workflows.validation import WorkflowValidationOrchestrator
+from schemabridge.transport.spark.config import SparkTransportSettings
 
 
 def build_migration_job_worker(

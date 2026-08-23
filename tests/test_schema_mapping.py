@@ -16,7 +16,7 @@ from schemabridge.models.mapping import (
     TableMappingPlan,
 )
 from schemabridge.models.metadata import CanonicalType, ColumnMetadata
-from schemabridge.services.schema_mapping import SchemaMappingService
+from schemabridge.mapping.suggestions import SchemaMappingService
 
 
 def _column(

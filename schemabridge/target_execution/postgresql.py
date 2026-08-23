@@ -29,7 +29,7 @@ _POSTGRESQL_TYPES = {
 
 def _quote_identifier(value: Any) -> str:
     if isinstance(value, bool) or not isinstance(value, str) or not value or "\x00" in value:
-        from schemabridge.services.transformation_sql import InvalidTransformationPlanError
+        from schemabridge.mapping.sql import InvalidTransformationPlanError
         raise InvalidTransformationPlanError("Invalid transformation plan.")
     return '"' + value.replace('"', '""') + '"'
 

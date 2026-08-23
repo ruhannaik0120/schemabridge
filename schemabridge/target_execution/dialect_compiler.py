@@ -16,7 +16,7 @@ from schemabridge.models.mapping import (
 )
 from schemabridge.models.metadata import CanonicalType
 from schemabridge.models.transport import TransportRelation
-from schemabridge.services.transformation_sql import (
+from schemabridge.mapping.sql import (
     InvalidTransformationPlanError,
     UnsupportedTransformationError,
 )
