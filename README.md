@@ -1,8 +1,8 @@
 # SchemaBridge
 
-SchemaBridge is a governed PostgreSQL/MySQL-to-Snowflake migration backend. It discovers schemas, proposes deterministic column mappings, requires human approval, compiles Snowflake SQL, records execution attempts, validates source and target aggregates, and preserves an auditable workflow history.
+SchemaBridge is a governed PostgreSQL, MySQL, and Snowflake migration backend. It discovers schemas, proposes deterministic column mappings, requires human approval, compiles target-specific SQL, records execution attempts, validates source and target aggregates, and preserves an auditable workflow history.
 
-It is a synchronous, governed batch-migration backend rather than a general streaming platform. After mapping approval, SchemaBridge creates a managed transient Snowflake staging table, copies source rows into it in bounded batches, and generates the final `INSERT ... SELECT` from that exact table.
+It is a synchronous, governed batch-migration backend rather than a general streaming platform. After mapping approval, SchemaBridge creates a managed staging table in the selected target, copies source rows into it in bounded batches, and generates the final `INSERT ... SELECT` from that exact table.
 
 ## Documentation
 
@@ -20,8 +20,8 @@ flowchart TB
     Orchestrators --> DatabaseService["DatabaseService"]
     DatabaseService --> Profiles["ProfileRegistry"]
     Profiles --> Factory["ConnectorFactory"]
-    Factory --> Source[("Source PostgreSQL")]
-    Factory --> Target[("Target Snowflake")]
+    Factory --> Source[("Source PostgreSQL / MySQL / Snowflake")]
+    Factory --> Target[("Target PostgreSQL / MySQL / Snowflake")]
     Orchestrators --> Repository["WorkflowRepository"]
     Repository --> Control[("Control-plane PostgreSQL")]
 ```
@@ -31,11 +31,11 @@ The source and target are data-plane systems. The separate control-plane Postgre
 ## Current workflow
 
 1. Create a workflow with named source and target profiles.
-2. Discover canonical PostgreSQL and Snowflake metadata.
+2. Discover canonical source and target metadata.
 3. Generate deterministic, evidence-backed mapping suggestions.
 4. Record human approval or overrides as a new immutable artifact.
-5. Claim a transport attempt, create managed Snowflake staging, and load PostgreSQL or MySQL rows in batches.
-6. Compile a Snowflake transformation preview from the approved plan and recorded staging evidence.
+5. Claim a transport attempt, create managed target staging, and load source rows in batches.
+6. Compile a target-specific transformation preview from the approved plan and recorded staging evidence.
 7. Recompile, verify, claim, and execute the approved statement.
 8. After a confirmed commit, remove SchemaBridge-managed staging and persist cleanup evidence.
 9. Run generated read-only aggregate checks on source and target.
@@ -50,7 +50,7 @@ Live verification on 2026-08-15 moved five PostgreSQL rows through a SchemaBridg
 - The workflow API never accepts arbitrary migration SQL from a client.
 - Execution is tied to an immutable approved mapping artifact and recompiles SQL before use.
 - Identifiers are quoted and literal expression values use bound parameters.
-- Target writes require a Snowflake profile with `write_enabled=true`.
+- Target writes require a matching target profile with `write_enabled=true`.
 - Every mutation requires an `Idempotency-Key`; later mutations also require the expected workflow version.
 - Immutable, hashed artifacts preserve discovery, approval, preview, execution, and validation evidence.
 - Concurrent transport, execution, and validation are guarded by durable control-plane claims.
@@ -103,7 +103,7 @@ docker compose up -d control-plane
 .\.venv\Scripts\python.exe -m uvicorn schemabridge.api.app:create_app --factory --env-file .env --host 127.0.0.1 --port 8000
 ```
 
-Open Swagger UI at <http://localhost:8000/docs>. See [SETUP.md](docs/SETUP.md) for named PostgreSQL/Snowflake profiles, required credentials, Docker Compose, environment variables, and troubleshooting.
+Open Swagger UI at <http://localhost:8000/docs>. See [SETUP.md](docs/SETUP.md) for named PostgreSQL, MySQL, and Snowflake profiles, required credentials, Docker Compose, environment variables, and troubleshooting.
 
 ## Repository layout
 
@@ -116,12 +116,12 @@ docs/           Product, architecture, setup, and study guides
 
 ## Current limitations
 
-- Batch transport selects source-reader and staging-writer roles by connector capability, not by vendor name. PostgreSQL reading and Snowflake staging are the only concrete transport implementations currently supplied.
+- Batch transport selects source-reader and staging-writer roles by connector capability, not by vendor name. PostgreSQL, MySQL, and Snowflake currently implement both roles.
 - The transport is synchronous and inserts batches through the connector; it is not a high-volume bulk-file or streaming engine.
 - Validation compares generated aggregates, not every row.
 - Uncertain remote outcomes require manual investigation.
-- The durable workflow has no authentication, background worker, frontend, file ingestion, profiling, or production deployment layer.
-- MySQL is supported as a durable workflow source. SQL Server remains a generic connector only, and Snowflake is still the only supported final execution target.
+- The durable workflow has no authentication, frontend, file ingestion, profiling, or production deployment layer.
+- SQL Server remains a generic connector only. The three supported durable databases have mostly unit/fake-driver coverage; live end-to-end coverage remains limited.
 - Static packaging and Compose configuration are tested; a running Docker deployment is not claimed as verified here.
 
 For a guided credential-free demonstration, see [LOCAL_WORKFLOW_DEMO.md](docs/LOCAL_WORKFLOW_DEMO.md). For interview preparation, see [INTERVIEW_DEMO.md](docs/INTERVIEW_DEMO.md).

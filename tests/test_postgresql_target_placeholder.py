@@ -8,6 +8,7 @@ from schemabridge.models.mapping import GeneratedTransformationSql, SqlDialect
 from schemabridge.models.transport import TransportRelation
 from schemabridge.persistence.errors import WorkflowUnsafeGeneratedStatementError
 from schemabridge.services.transformation_sql import InvalidTransformationPlanError
+from schemabridge.services.validation_sql import compile_validation_sql
 from schemabridge.target_execution import (
     PostgreSqlTargetExecutionAdapter,
     TargetExecutionAdapter,
@@ -142,3 +143,19 @@ def test_postgresql_adapter_rejects_wrong_target_and_classifies_interruption() -
     )
     assert interrupted.disposition is TargetExecutionDisposition.OUTCOME_UNCERTAIN
     assert interrupted.failure_category == "TARGET_EXECUTION_INTERRUPTED"
+
+
+def test_postgresql_target_validation_uses_schema_table_relation() -> None:
+    _source, target = compile_validation_sql(
+        _approved(),
+        source_schema="source_schema",
+        source_table="people",
+        target_database="target_database",
+        target_schema='landing"schema',
+        target_table="people",
+        target_dialect=SqlDialect.POSTGRESQL,
+    )
+
+    assert target.dialect is SqlDialect.POSTGRESQL
+    assert 'FROM "landing""schema"."people" AS "tgt"' in target.sql
+    assert '"target_database"."landing""schema"' not in target.sql

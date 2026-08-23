@@ -24,11 +24,11 @@ ProfileRegistry
     v
 ConnectorFactory
     |
-    +--> PostgreSQL connector (source discovery, batch reading, validation)
+    +--> PostgreSQL connector (discovery, batch reading, staging, execution, validation)
     |
-    +--> MySQL connector (source discovery, batch reading, validation)
+    +--> MySQL connector (discovery, batch reading, staging, execution, validation)
     |
-    +--> Snowflake connector (target discovery, execution, validation)
+    +--> Snowflake connector (discovery, batch reading, staging, execution, validation)
 ```
 
 Durable state follows a separate path:
@@ -121,13 +121,9 @@ The control plane stores product state. It contains workflows, artifact bytes an
 
 It is not the migration source database. Keeping it separate lets SchemaBridge apply transactions, row locks, optimistic versions, and constraints to workflow state without mixing that state with customer data.
 
-### Source PostgreSQL
+### Data-plane source and target profiles
 
-The source profile is selected by the workflow's `source_profile_id`. It is used for source schema discovery, bounded batch extraction, and the PostgreSQL half of validation. SchemaBridge does not persist its credentials or business rows.
-
-### Target Snowflake
-
-The target profile is selected by `target_profile_id`. It is used for target discovery, approved write execution, and the Snowflake half of validation. The durable write path checks that the profile database exactly matches the workflow target and that `write_enabled=true`.
+The source profile is selected by the workflow's `source_profile_id`; the target profile is selected by `target_profile_id`. PostgreSQL, MySQL, and Snowflake can each provide discovery, bounded extraction, staging writes, target execution, and validation dialect support. The durable write path checks that the profile database exactly matches the workflow target and that `write_enabled=true`. SchemaBridge does not persist data-plane credentials or business rows.
 
 The transport orchestrator creates a uniquely named transient staging table, copies bounded source batches, and persists counts and relation identity without business rows. The generated `INSERT ... SELECT` reads the exact staging relation rehydrated from that evidence.
 
@@ -144,11 +140,11 @@ The transport orchestrator creates a uniquely named transient staging table, cop
 
 ### 2. Source discovery
 
-`WorkflowPlanningOrchestrator.discover_source` verifies the current state and resolves the workflow's source profile through `DatabaseService`. The PostgreSQL connector runs fixed catalog queries, normalizers build canonical `TableMetadata`, and the persistence service appends `SOURCE_DISCOVERY`.
+`WorkflowPlanningOrchestrator.discover_source` verifies the current state and resolves the workflow's source profile through `DatabaseService`. The selected connector runs fixed catalog queries, normalizers build canonical `TableMetadata`, and the persistence service appends `SOURCE_DISCOVERY`.
 
 ### 3. Target discovery
 
-`discover_target` follows the same boundary using the workflow's Snowflake target profile. Once both discovery artifacts exist, the workflow can enter `DISCOVERED`.
+`discover_target` follows the same boundary using the workflow's selected target profile. Once both discovery artifacts exist, the workflow can enter `DISCOVERED`.
 
 ### 4. Mapping proposal
 
@@ -160,11 +156,11 @@ The transport orchestrator creates a uniquely named transient staging table, cop
 
 ### 6. Managed staging transport
 
-`WorkflowTransportOrchestrator.run` verifies the current discovery and approval artifacts, resolves the exact profiles, and stores a unique claim before remote work. The workflow-selected source profile must provide the `BatchSourceReader` capability, while the workflow-selected staging profile must provide `StagingTableWriter` and opt in to writes. Transport assigns no permanent source or target role from a vendor name. The current concrete implementations read PostgreSQL and write transient Snowflake staging, but another connector can fill either role by implementing the relevant capability. A proved cleanup returns the workflow to `MAPPING_APPROVED`; an uncertain outcome enters `STAGING_RECOVERY_REQUIRED` and is not retried automatically.
+`WorkflowTransportOrchestrator.run` verifies the current discovery and approval artifacts, resolves the exact profiles, and stores a unique claim before remote work. The workflow-selected source profile must provide the `BatchSourceReader` capability, while the workflow-selected staging profile must provide `StagingTableWriter` and opt in to writes. Transport assigns no permanent source or target role from a vendor name. PostgreSQL, MySQL, and Snowflake implement both transport capabilities. A proved cleanup returns the workflow to `MAPPING_APPROVED`; an uncertain outcome enters `STAGING_RECOVERY_REQUIRED` and is not retried automatically.
 
 ### 7. Transformation preview
 
-`preview_transformation` rehydrates the approved plan and calls `SnowflakeTransformationSqlCompiler`. A `SELECT` can be produced for review, but durable execution requires an `INSERT_SELECT` preview. The preview records source and target relations, parameters, columns, and approved-plan version.
+`preview_transformation` rehydrates the approved plan and resolves the registered target compiler. A `SELECT` can be produced for review, but durable execution requires an `INSERT_SELECT` preview. The preview records source and target relations, parameters, columns, and approved-plan version.
 
 ### 8. Execution
 
@@ -178,9 +174,9 @@ The transport orchestrator creates a uniquely named transient staging table, cop
 6. Require an `INSERT_SELECT` preview tied to the approved-plan version.
 7. Recompile from the persisted approved mapping and require exact equality with the preview.
 8. Validate the SQL structure.
-9. Resolve the exact Snowflake target profile and require `write_enabled=true`.
+9. Resolve the exact target profile and require `write_enabled=true`.
 10. Persist a unique execution fingerprint and durable `CLAIMED` attempt.
-11. Atomically acquire the `RUNNING` state before calling Snowflake.
+11. Atomically acquire the `RUNNING` state before calling the target connector.
 12. Persist sanitized evidence and the resulting workflow state.
 13. On confirmed commit, idempotently drop the exact managed staging relation and persist cleanup evidence.
 
@@ -190,7 +186,7 @@ This ordering prevents a stale preview, altered SQL, duplicate caller, or disabl
 
 `WorkflowValidationOrchestrator.validate` requires successful committed execution evidence and the approved mapping. It recompiles a safe validation plan, claims a validation run, marks it running, and delegates to `MigrationValidationExecutionService`.
 
-The execution service resolves the source and target profiles independently and asks each connector for its validation SQL dialect capability. PostgreSQL and MySQL are implemented source dialects; Snowflake is the implemented target dialect. It executes one read-only aggregate query per side and rejects malformed multi-row results.
+The execution service resolves the source and target profiles independently and asks each connector for its validation SQL dialect capability. PostgreSQL, MySQL, and Snowflake are implemented on both sides. It executes one read-only aggregate query per side and rejects malformed multi-row results.
 
 ### 9. Reconciliation
 
@@ -218,7 +214,7 @@ A persisted preview is evidence, not authority by itself. Recompiling from the a
 
 ### Why `write_enabled` exists
 
-Selecting a Snowflake profile is not sufficient authorization for writes. The profile must opt in explicitly, and the exact configured database must match the workflow target. This provides a configuration-level kill switch in addition to workflow approval.
+Selecting a target profile is not sufficient authorization for writes. The profile must opt in explicitly, and the exact configured database must match the workflow target. This provides a configuration-level kill switch in addition to workflow approval.
 
 ### Why idempotency exists
 
@@ -238,7 +234,7 @@ A committed write and a data comparison answer different questions. Execution ev
 
 ## Transaction boundaries
 
-Control-plane writes use PostgreSQL transactions and locks. Remote discovery, Snowflake execution, and source/target validation occur outside those transactions.
+Control-plane writes use PostgreSQL transactions and locks. Remote discovery, target execution, and source/target validation occur outside those transactions.
 
 The durable claim pattern is:
 

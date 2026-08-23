@@ -1,6 +1,6 @@
 # Adding a connector
 
-A new generic backend implements `DatabaseConnector`, exports `Connector`, and receives one factory registration. That makes it available to `DatabaseService`; it does not automatically make it a supported durable migration source or target. The current durable workflow contains explicit PostgreSQL-source and Snowflake-target policy.
+A new generic backend implements `DatabaseConnector`, exports `Connector`, and receives one factory registration. That makes it available to `DatabaseService`; durable migration support also requires the capability work described below. SchemaBridge currently supports PostgreSQL, MySQL, and Snowflake as durable sources and final targets.
 
 ## Contract
 
@@ -33,7 +33,19 @@ Register the module path in `SUPPORTED_CONNECTORS` inside `schemabridge/connecto
 9. Never import vendor drivers outside `connectors/` or the control-plane persistence boundary.
 10. Add fake-driver unit tests and perform opt-in live verification separately.
 
-Supporting a new backend in durable orchestration is separate feature work. It requires explicit discovery, execution, validation, safety, and recovery policy rather than only a factory entry.
+Supporting a new backend in durable orchestration is separate feature work. It requires discovery, bounded reading, staging writes, target SQL compilation and controlled execution, validation SQL, safety gates, recovery policy, and tests—not only a factory entry.
+
+## Current connector-extension model
+
+The workflow engine is capability-based. A registered source must provide table
+discovery, `BatchSourceReader`, and a validation dialect. A final target must
+provide `StagingTableWriter`, a registered target execution adapter, and a
+validation dialect. PostgreSQL, MySQL, and Snowflake currently meet these
+requirements. SQL Server remains a generic query connector only.
+
+Final targets are registered in `schemabridge.api.dependencies` and in
+`schemabridge.services.migration_job_runtime`, so the FastAPI workflow and the
+background worker use the same target capabilities.
 
 ## Bounded transport extensions
 

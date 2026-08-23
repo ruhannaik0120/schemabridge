@@ -1,6 +1,57 @@
 # Local workflow demo
 
-This guide separates a safe local control-plane demonstration from a real PostgreSQL-to-Snowflake migration. The local demo never claims that data moved.
+This guide separates a safe local control-plane demonstration from a real data-plane migration. The local demo never claims that data moved.
+
+## Disposable Snowflake-to-PostgreSQL transport proof
+
+The following script proves the connector-neutral batch boundary rather than
+the durable workflow policy. It creates a three-row Snowflake source table,
+loads it into a PostgreSQL staging table in two batches, verifies the row
+count, and removes both disposable tables in `finally` cleanup.
+
+Use a write-enabled PostgreSQL target profile and explicitly confirm remote
+writes:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.live_snowflake_to_postgresql_transport `
+  --confirm-live-write `
+  --snowflake-profile <snowflake-profile-id> `
+  --postgresql-profile <write-enabled-postgresql-profile-id>
+```
+
+If a local PostgreSQL lab is exposed on a port different from the profile,
+pass `--postgresql-port <port>` for this one proof. The override is in memory
+only; it never changes `.env` or the stored profile document.
+
+## Disposable PostgreSQL-to-MySQL transport proof
+
+This equivalent proof creates three PostgreSQL source rows, loads them into a
+MySQL staging table in two batches, checks the target row count, and removes
+both disposable tables in `finally` cleanup:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.live_postgresql_to_mysql_transport `
+  --confirm-live-write `
+  --postgresql-profile <postgresql-profile-id> `
+  --mysql-profile <mysql-profile-id>
+```
+
+Use `--postgresql-port` and `--mysql-port` only when a local lab uses ports
+different from its configured profiles. The overrides are in-memory only.
+
+## Disposable FastAPI PostgreSQL-to-MySQL workflow proof
+
+With a configured control-plane DSN, this runs discovery, mapping approval,
+staging, target execution, validation, and staging cleanup through the FastAPI
+application. It removes its uniquely named data-plane source and target tables
+afterward; the control-plane workflow evidence remains for audit inspection.
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.live_postgresql_to_mysql_workflow `
+  --confirm-live-write `
+  --postgresql-profile <postgresql-profile-id> `
+  --mysql-profile <write-enabled-mysql-profile-id>
+```
 
 ## 1. Local API and control plane only
 

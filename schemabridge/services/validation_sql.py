@@ -258,7 +258,13 @@ def compile_validation_sql(
     source_relation = ".".join(
         (_quote(source_dialect, source_schema), _quote(source_dialect, source_table))
     )
-    if target_dialect is SqlDialect.MYSQL:
+    if target_dialect is SqlDialect.POSTGRESQL:
+        # PostgreSQL selects the database at connection time.  PostgreSQL
+        # relation syntax is therefore schema.table, not catalog.schema.table.
+        target_relation = ".".join(
+            (_quote(target_dialect, target_schema), _quote(target_dialect, target_table))
+        )
+    elif target_dialect is SqlDialect.MYSQL:
         # MySQL uses one database name where the canonical model has both a
         # catalog and schema.  Rendering both would create invalid three-part
         # MySQL SQL and could point validation at the wrong relation.
