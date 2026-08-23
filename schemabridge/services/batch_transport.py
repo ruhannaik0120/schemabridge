@@ -307,6 +307,8 @@ class ProfileBoundBatchTransportService:
             SparkJdbcReadPlanFactory,
             SparkJdbcWritePlanFactory,
             SparkSessionFactory,
+            SparkSnowflakeReadPlanFactory,
+            SparkSnowflakeWritePlanFactory,
             SparkTransportSettings,
             SparkTransportStrategy,
         )
@@ -332,19 +334,30 @@ class ProfileBoundBatchTransportService:
             return TransportStrategySelection(
                 SequentialBatchTransportStrategy(), False, "PROFILE_CONTEXT_UNAVAILABLE"
             )
+        uses_snowflake = (
+            prepared.source_profile.db_type == "snowflake"
+            or prepared.target_profile.db_type == "snowflake"
+        )
+        if uses_snowflake and not self.spark_settings.has_package("spark-snowflake"):
+            return TransportStrategySelection(
+                SequentialBatchTransportStrategy(), False, "SNOWFLAKE_SPARK_CONNECTOR_UNAVAILABLE"
+            )
         try:
-            read_plan = SparkJdbcReadPlanFactory.build(prepared.source_profile, source_table)
-            SparkJdbcPartitionPlanner.partition_column(source_table)
+            if prepared.source_profile.db_type == "snowflake":
+                SparkSnowflakeReadPlanFactory.build(prepared.source_profile, source_table)
+            else:
+                SparkJdbcReadPlanFactory.build(prepared.source_profile, source_table)
+                SparkJdbcPartitionPlanner.partition_column(source_table)
             relation = BatchTransportService.staging_relation(
                 transport_id=UUID(int=0),
                 target_database=target_database,
                 target_schema=target_schema,
             )
-            SparkJdbcWritePlanFactory.build(
-                prepared.target_profile,
-                BatchTransportService.staging_definition(source_table, relation),
-            )
-            del read_plan
+            definition = BatchTransportService.staging_definition(source_table, relation)
+            if prepared.target_profile.db_type == "snowflake":
+                SparkSnowflakeWritePlanFactory.build(prepared.target_profile, definition)
+            else:
+                SparkJdbcWritePlanFactory.build(prepared.target_profile, definition)
         except (SparkJdbcPlanError, ValueError, TypeError):
             return TransportStrategySelection(
                 SequentialBatchTransportStrategy(), False, "SPARK_JDBC_REQUIREMENTS_NOT_MET"

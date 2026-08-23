@@ -41,3 +41,12 @@ def test_blank_threshold_uses_the_safe_default(monkeypatch) -> None:
     monkeypatch.setenv("SCHEMABRIDGE_SPARK_MINIMUM_SOURCE_ROWS", "")
 
     assert SparkTransportSettings.from_environment().minimum_source_rows == 1_000_000
+
+
+def test_package_check_is_case_insensitive_and_requires_non_empty_text() -> None:
+    settings = SparkTransportSettings(jars_packages="net.snowflake:spark-snowflake_2.12:3.2.1")
+
+    assert settings.has_package("SPARK-SNOWFLAKE") is True
+    assert settings.has_package("postgresql") is False
+    with pytest.raises(ValueError):
+        settings.has_package("")

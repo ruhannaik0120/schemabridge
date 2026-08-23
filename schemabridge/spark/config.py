@@ -92,3 +92,13 @@ class SparkTransportSettings:
             and not isinstance(estimated_row_count, bool)
             and estimated_row_count >= self.minimum_source_rows
         )
+
+    def has_package(self, fragment: str) -> bool:
+        """Check configured Spark package coordinates without loading Spark."""
+
+        if not isinstance(fragment, str) or not fragment.strip():
+            raise ValueError("fragment must be non-empty text.")
+        return bool(
+            self.jars_packages
+            and fragment.casefold() in self.jars_packages.casefold()
+        )

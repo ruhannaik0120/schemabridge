@@ -12,6 +12,14 @@ from .writer import (
 )
 from .runtime import SparkRuntimeUnavailableError, SparkSessionFactory
 from .strategy import SparkTransportStrategy
+from .snowflake_connector import (
+    SparkSnowflakeDataFrameReader,
+    SparkSnowflakeDataFrameWriter,
+    SparkSnowflakeReadPlan,
+    SparkSnowflakeReadPlanFactory,
+    SparkSnowflakeWritePlan,
+    SparkSnowflakeWritePlanFactory,
+)
 
 __all__ = [
     "SparkJdbcPlanError",
@@ -29,4 +37,10 @@ __all__ = [
     "SparkSessionFactory",
     "SparkTransportSettings",
     "SparkTransportStrategy",
+    "SparkSnowflakeDataFrameReader",
+    "SparkSnowflakeDataFrameWriter",
+    "SparkSnowflakeReadPlan",
+    "SparkSnowflakeReadPlanFactory",
+    "SparkSnowflakeWritePlan",
+    "SparkSnowflakeWritePlanFactory",
 ]

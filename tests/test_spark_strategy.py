@@ -105,6 +105,19 @@ def _profile(profile_id: str, *, write_enabled: bool) -> ConnectionProfile:
     )
 
 
+def _snowflake_profile(profile_id: str, *, write_enabled: bool) -> ConnectionProfile:
+    return ConnectionProfile(
+        profile_id=profile_id,
+        db_type="snowflake",
+        host="organization-account",
+        database="ANALYTICS",
+        username="operator",
+        password="private-value",
+        connection_options={"warehouse": "COMPUTE_WH", "role": "ANALYST"},
+        write_enabled=write_enabled,
+    )
+
+
 def _strategy(*, written_rows: int):
     session_factory = SessionFactory()
     dataframe = DataFrame(3)
@@ -174,6 +187,40 @@ def test_strategy_rejects_mismatched_counts_after_stopping_spark() -> None:
     assert session_factory.stopped is True
 
 
+def test_strategy_supports_snowflake_source_and_target_without_integer_partitioning() -> None:
+    session_factory = SessionFactory()
+    dataframe = DataFrame(3)
+    snowflake_reader = DataFrameReader(dataframe)
+    snowflake_writer = DataFrameWriter()
+    target = QueryWriter(3)
+    strategy = SparkTransportStrategy(
+        SparkTransportSettings(num_partitions=2),
+        session_factory=session_factory,
+        snowflake_dataframe_reader=snowflake_reader,
+        snowflake_dataframe_writer=snowflake_writer,
+    )
+    source_table = replace(_table(), catalog_name="ANALYTICS", schema_name="REPORTING", system="snowflake")
+
+    result = strategy.transfer(
+        source_reader=Reader(()),
+        staging_writer=target,
+        source_profile=_snowflake_profile("source", write_enabled=False),
+        target_profile=_snowflake_profile("target", write_enabled=True),
+        transport_id=UUID(int=9),
+        source_table=source_table,
+        target_database="ANALYTICS",
+        target_schema="LANDING",
+        batch_size=500,
+        timeout_seconds=30,
+        progress_reporter=None,
+    )
+
+    assert result.rows_read == result.rows_written == 3
+    assert snowflake_reader.partition_plan.query.startswith('SELECT "customer_id"')
+    assert snowflake_writer.write_plan.staging_table == '"ANALYTICS"."LANDING"."SB_STAGE_00000000000000000000000000000009"'
+    assert session_factory.stopped is True
+
+
 def test_profile_bound_service_selects_spark_only_for_eligible_large_tables() -> None:
     source = QueryReader()
     target = QueryWriter(3)
@@ -189,7 +236,10 @@ def test_profile_bound_service_selects_spark_only_for_eligible_large_tables() ->
     )
     service = ProfileBoundBatchTransportService(
         lambda _profile_id: None,
-        spark_settings=SparkTransportSettings(minimum_source_rows=3),
+        spark_settings=SparkTransportSettings(
+            minimum_source_rows=3,
+            jars_packages="net.snowflake:spark-snowflake_2.12:3.2.1",
+        ),
     )
 
     selected = service.select_execution_strategy(
@@ -209,6 +259,62 @@ def test_profile_bound_service_selects_spark_only_for_eligible_large_tables() ->
     assert isinstance(small.strategy, SequentialBatchTransportStrategy)
     assert small.spark_selected is False
     assert small.fallback_reason == "SOURCE_ROW_ESTIMATE_BELOW_THRESHOLD"
+
+
+def test_profile_bound_service_falls_back_when_the_snowflake_spark_package_is_missing() -> None:
+    prepared = PreparedBatchTransport(
+        source_profile_id="source",
+        target_profile_id="target",
+        batch_size=500,
+        timeout_seconds=30,
+        source_reader=Reader(()),
+        staging_writer=Writer(),
+        source_profile=_snowflake_profile("source", write_enabled=False),
+        target_profile=_snowflake_profile("target", write_enabled=True),
+    )
+    selection = ProfileBoundBatchTransportService(
+        lambda _profile_id: None,
+        spark_settings=SparkTransportSettings(minimum_source_rows=3),
+        spark_runtime_available=lambda: True,
+    ).select_execution_plan(
+        prepared,
+        replace(_table(), catalog_name="ANALYTICS", schema_name="REPORTING", system="snowflake", estimated_row_count=3),
+        target_database="ANALYTICS",
+        target_schema="LANDING",
+    )
+
+    assert isinstance(selection.strategy, SequentialBatchTransportStrategy)
+    assert selection.fallback_reason == "SNOWFLAKE_SPARK_CONNECTOR_UNAVAILABLE"
+
+
+def test_profile_bound_service_selects_spark_for_an_eligible_large_snowflake_workflow() -> None:
+    prepared = PreparedBatchTransport(
+        source_profile_id="source",
+        target_profile_id="target",
+        batch_size=500,
+        timeout_seconds=30,
+        source_reader=Reader(()),
+        staging_writer=Writer(),
+        source_profile=_snowflake_profile("source", write_enabled=False),
+        target_profile=_snowflake_profile("target", write_enabled=True),
+    )
+    service = ProfileBoundBatchTransportService(
+        lambda _profile_id: None,
+        spark_settings=SparkTransportSettings(
+            minimum_source_rows=3,
+            jars_packages="net.snowflake:spark-snowflake_2.12:3.2.1",
+        ),
+        spark_runtime_available=lambda: True,
+    )
+
+    selected = service.select_execution_strategy(
+        prepared,
+        replace(_table(), catalog_name="ANALYTICS", schema_name="REPORTING", system="snowflake", estimated_row_count=3),
+        target_database="ANALYTICS",
+        target_schema="LANDING",
+    )
+
+    assert isinstance(selected, SparkTransportStrategy)
 
 
 def test_profile_bound_service_explains_runtime_and_ineligible_spark_fallbacks() -> None:
