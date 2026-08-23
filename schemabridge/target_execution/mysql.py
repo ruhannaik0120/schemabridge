@@ -7,7 +7,7 @@ from typing import Any
 from schemabridge.models.mapping import GeneratedTransformationSql, SqlDialect
 from schemabridge.models.metadata import CanonicalType
 from schemabridge.persistence.errors import WorkflowUnsafeGeneratedStatementError
-from schemabridge.services.transformation_sql import InvalidTransformationPlanError
+from schemabridge.mapping.sql import InvalidTransformationPlanError
 from schemabridge.validation.sql_guard import validate_query
 
 from .base import (

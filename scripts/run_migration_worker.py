@@ -14,7 +14,7 @@ from schemabridge.services.database_service import (
     get_database_service,
     reset_database_services,
 )
-from schemabridge.services.migration_job_runtime import build_migration_job_worker
+from schemabridge.services.jobs.runtime import build_migration_job_worker
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

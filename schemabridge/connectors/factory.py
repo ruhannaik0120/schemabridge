@@ -1,8 +1,8 @@
 """Select concrete connectors while keeping optional drivers lazy.
 
 The registry supports generic demo, MySQL, PostgreSQL, Snowflake, and SQL Server
-access.  Durable migration execution applies a narrower policy elsewhere and
-requires Snowflake; registration here does not imply durable execution support.
+access. Durable migration execution applies capability and write-authorization
+policy elsewhere; registration here does not imply durable execution support.
 """
 
 from __future__ import annotations

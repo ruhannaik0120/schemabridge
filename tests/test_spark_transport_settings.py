@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from schemabridge.spark import SparkTransportSettings
-from schemabridge.spark.config import SparkConfigurationError
+from schemabridge.transport.spark import SparkTransportSettings
+from schemabridge.transport.spark.config import SparkConfigurationError
 
 
 def test_defaults_use_the_automatic_large_table_threshold() -> None:

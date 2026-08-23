@@ -9,14 +9,16 @@ import pytest
 
 from schemabridge.models.connection_profile import ConnectionProfile
 from schemabridge.models.discovery import ConstraintType, KeyConstraintMetadata
-from schemabridge.spark import SparkTransportSettings, SparkTransportStrategy
+from schemabridge.transport.spark import SparkTransportSettings, SparkTransportStrategy
 from schemabridge.services.batch_transport import (
     PreparedBatchTransport,
     ProfileBoundBatchTransportService,
 )
 from schemabridge.transport.base import BatchTransportError
 from schemabridge.transport.strategy import SequentialBatchTransportStrategy
-from tests.test_batch_transport_service import Reader, Writer, _table
+from tests.support.transport import BatchReaderSpy as Reader
+from tests.support.transport import StagingWriterSpy as Writer
+from tests.support.transport import transport_table as _table
 
 
 class QueryReader(Reader):

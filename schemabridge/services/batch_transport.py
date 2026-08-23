@@ -302,7 +302,7 @@ class ProfileBoundBatchTransportService:
                 SequentialBatchTransportStrategy(), False, "SPARK_NOT_CONFIGURED"
             )
         # Keep the optional runtime out of the ordinary import/startup path.
-        from schemabridge.spark import (
+        from schemabridge.transport.spark import (
             SparkJdbcPartitionPlanner,
             SparkJdbcReadPlanFactory,
             SparkJdbcWritePlanFactory,
@@ -312,7 +312,7 @@ class ProfileBoundBatchTransportService:
             SparkTransportSettings,
             SparkTransportStrategy,
         )
-        from schemabridge.spark.jdbc import SparkJdbcPlanError
+        from schemabridge.transport.spark.jdbc import SparkJdbcPlanError
 
         if not isinstance(self.spark_settings, SparkTransportSettings):
             raise TypeError("spark_settings must be SparkTransportSettings.")

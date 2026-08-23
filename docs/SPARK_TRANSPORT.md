@@ -78,10 +78,10 @@ opt in to the non-production live proof.
 
 The repository includes credential-free unit tests for settings, routing,
 partition planning, JDBC plans, reader/writer behavior, and cleanup semantics.
-It also contains opt-in live Docker tests:
+It also contains opt-in live integration tests:
 
 - `tests/test_spark_postgresql_integration.py`: PostgreSQL → Spark → PostgreSQL;
-- `tests/test_spark_mysql_integration.py`: MySQL → Spark → MySQL.
+- `tests/test_spark_mysql_integration.py`: MySQL → Spark → MySQL;
 - `tests/test_spark_snowflake_integration.py`: Snowflake → Spark → Snowflake.
 
 Each proof creates three source rows, checks equal source/staging counts, and

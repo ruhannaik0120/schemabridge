@@ -7,7 +7,8 @@ from schemabridge.api.adapters.jobs import migration_job_to_api
 from schemabridge.api.schemas.jobs import MigrationJobSchema
 from schemabridge.models.migration_job import MigrationJobStage, MigrationJobStatus
 from schemabridge.models.transport import BatchTransportProgress
-from tests.test_migration_job_repository import NOW, _job
+from tests.support.jobs import NOW
+from tests.support.jobs import migration_job as _job
 
 
 def test_job_adapter_copies_every_declared_api_field() -> None:

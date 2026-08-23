@@ -24,7 +24,7 @@ from schemabridge.persistence.errors import (
     WorkflowStaleArtifactReferenceError,
 )
 from schemabridge.persistence.serialization import request_hash
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
 
 
 def _now() -> datetime:

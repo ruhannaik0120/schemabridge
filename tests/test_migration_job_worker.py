@@ -5,17 +5,17 @@ from datetime import timedelta
 import pytest
 
 from schemabridge.models.migration_job import MigrationJobStage, MigrationJobStatus
-from schemabridge.services.migration_job_worker import (
+from schemabridge.services.jobs.worker import (
     MigrationJobProcessorContractError,
     MigrationJobWorker,
 )
-from schemabridge.services.migration_jobs import (
+from schemabridge.services.jobs.lifecycle import (
     MigrationJobClaimService,
     MigrationJobCompletionService,
     MigrationJobProgressService,
 )
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
-from tests.test_migration_job_repository import JOB_ID, NOW
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
+from tests.support.jobs import JOB_ID, NOW
 from tests.test_migration_job_service import _create, _service
 
 

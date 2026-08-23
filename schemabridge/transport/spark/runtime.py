@@ -1,4 +1,4 @@
-"""Lazy Spark-session lifecycle for opt-in large-table transport."""
+"""Lazy Spark-session lifecycle for automatically selected large-table transport."""
 
 from __future__ import annotations
 

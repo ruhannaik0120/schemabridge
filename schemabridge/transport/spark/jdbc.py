@@ -1,4 +1,4 @@
-"""Build safe, profile-bound JDBC reads for a future Spark transport runner."""
+"""Build safe, profile-bound JDBC reads for active Spark transport."""
 
 from __future__ import annotations
 

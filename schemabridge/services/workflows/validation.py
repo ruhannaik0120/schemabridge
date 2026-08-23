@@ -47,7 +47,7 @@ from schemabridge.persistence.errors import (
     WorkflowValidationOutcomeUncertainError,
 )
 from schemabridge.persistence.serialization import request_hash, serialize_artifact
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
 
 
 def _now() -> datetime:

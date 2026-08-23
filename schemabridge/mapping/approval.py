@@ -23,7 +23,7 @@ from schemabridge.models.mapping import (
     TransformationExpressionType,
 )
 from schemabridge.models.metadata import ColumnMetadata
-from schemabridge.services.schema_mapping import _type_compatibility
+from schemabridge.mapping.suggestions import _type_compatibility
 
 
 def _identity(table: TableMetadata) -> TableMappingIdentity:

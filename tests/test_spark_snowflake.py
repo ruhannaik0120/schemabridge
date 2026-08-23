@@ -9,14 +9,14 @@ import pytest
 from schemabridge.models.connection_profile import ConnectionProfile
 from schemabridge.models.metadata import CanonicalType
 from schemabridge.models.transport import StagingColumn, StagingTableDefinition, TransportRelation
-from schemabridge.spark import (
+from schemabridge.transport.spark import (
     SparkJdbcPlanError,
     SparkSnowflakeDataFrameReader,
     SparkSnowflakeDataFrameWriter,
     SparkSnowflakeReadPlanFactory,
     SparkSnowflakeWritePlanFactory,
 )
-from tests.test_batch_transport_service import _table
+from tests.support.transport import transport_table as _table
 
 
 def _profile() -> ConnectionProfile:

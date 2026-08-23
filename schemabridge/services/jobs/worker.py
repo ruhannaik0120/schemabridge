@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from schemabridge.models.migration_job import MigrationJob, MigrationJobStatus
-from schemabridge.services.migration_jobs import MigrationJobClaimService
+from schemabridge.services.jobs.lifecycle import MigrationJobClaimService
 
 
 class MigrationJobProcessor(Protocol):

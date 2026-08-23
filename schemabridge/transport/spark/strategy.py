@@ -1,4 +1,4 @@
-"""Guarded distributed JDBC transport into SchemaBridge staging tables."""
+"""Guarded distributed transport into SchemaBridge staging tables."""
 
 from __future__ import annotations
 

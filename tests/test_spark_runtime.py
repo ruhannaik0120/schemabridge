@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from schemabridge.spark import (
+from schemabridge.transport.spark import (
     SparkRuntimeUnavailableError,
     SparkSessionFactory,
     SparkTransportSettings,

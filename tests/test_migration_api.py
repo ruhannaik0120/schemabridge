@@ -406,7 +406,7 @@ def test_complete_http_workflow_executes_ordered_profile_bound_validation(monkey
             calls.append((self.profile, deepcopy(kwargs)))
             return DatabaseExecutionResult(tuple(results), (tuple(results.values()),), None)
 
-    import schemabridge.services.validation_execution as execution_module
+    import schemabridge.validation.execution as execution_module
     monkeypatch.setattr(execution_module, "get_database_service", lambda profile: DatabaseService(profile))
     app = _discover_app({"pg-source": source, "sf-target": target}, [])
     with TestClient(app) as client:
@@ -469,7 +469,7 @@ def test_execution_returns_validation_outcomes_as_success(monkeypatch, target_ch
         def execute_validation_query(self, **_kwargs):
             return DatabaseExecutionResult(tuple(self.metrics), (tuple(self.metrics.values()),), None)
 
-    import schemabridge.services.validation_execution as execution_module
+    import schemabridge.validation.execution as execution_module
     monkeypatch.setattr(execution_module, "get_database_service", lambda profile: DatabaseService(profile, source_metrics if profile == "pg" else target_metrics))
     with TestClient(create_app()) as client:
         approved, _ = _get_approved(client, source, target)
@@ -501,7 +501,7 @@ def test_malformed_execution_result_is_redacted_502(monkeypatch) -> None:
         def execute_validation_query(self, **_kwargs):
             return DatabaseExecutionResult(("row_count",), ((1,), (2,)), None)
 
-    import schemabridge.services.validation_execution as execution_module
+    import schemabridge.validation.execution as execution_module
     monkeypatch.setattr(execution_module, "get_database_service", lambda profile: DatabaseService(profile))
     with TestClient(create_app()) as client:
         approved, _ = _get_approved(client, source, target)

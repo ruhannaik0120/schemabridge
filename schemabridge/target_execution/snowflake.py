@@ -9,7 +9,7 @@ from schemabridge.models.mapping import (
     TransformationStatementType,
 )
 from schemabridge.models.transport import TransportRelation
-from schemabridge.services.transformation_sql import (
+from schemabridge.mapping.sql import (
     InvalidTransformationPlanError,
     SnowflakeTransformationSqlCompiler,
 )

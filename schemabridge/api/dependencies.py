@@ -37,7 +37,7 @@ def _resolve_profile_database_service(profile_id: str):
 def get_schema_mapping_service():
     """Build the deterministic schema-mapping domain service."""
 
-    from schemabridge.services.schema_mapping import SchemaMappingService
+    from schemabridge.mapping.suggestions import SchemaMappingService
 
     return SchemaMappingService()
 
@@ -45,7 +45,7 @@ def get_schema_mapping_service():
 def get_mapping_approval_service():
     """Build the service that applies explicit human mapping decisions."""
 
-    from schemabridge.services.mapping_approval import MappingApprovalService
+    from schemabridge.mapping.approval import MappingApprovalService
 
     return MappingApprovalService()
 
@@ -53,7 +53,7 @@ def get_mapping_approval_service():
 def get_validation_execution_service():
     """Build the paired source/target aggregate-validation executor."""
 
-    from schemabridge.services.validation_execution import MigrationValidationExecutionService
+    from schemabridge.validation.execution import MigrationValidationExecutionService
 
     return MigrationValidationExecutionService()
 
@@ -67,7 +67,7 @@ def get_validation_execution_service_factory() -> Callable:
 def get_validation_compiler() -> Callable:
     """Return the pure function that generates paired validation queries."""
 
-    from schemabridge.services.validation_sql import compile_validation_sql
+    from schemabridge.validation.sql import compile_validation_sql
 
     return compile_validation_sql
 
@@ -83,7 +83,7 @@ def get_database_service_factory():
 def get_migration_execution_service(
     database_service_factory=Depends(get_database_service_factory),
 ):
-    """Build the write-gated Snowflake execution boundary."""
+    """Build the write-gated target execution boundary."""
 
     from schemabridge.services.migration_execution import ProfileBoundMigrationExecutionService
 
@@ -115,7 +115,7 @@ def get_batch_transport_service(
     """Build the profile-bound source-to-managed-staging boundary."""
 
     from schemabridge.services.batch_transport import ProfileBoundBatchTransportService
-    from schemabridge.spark.config import SparkTransportSettings
+    from schemabridge.transport.spark.config import SparkTransportSettings
 
     return ProfileBoundBatchTransportService(
         database_service_factory,
@@ -147,7 +147,7 @@ def get_workflow_repository(request: Request):
 def get_workflow_persistence_service(repository=Depends(get_workflow_repository)):
     """Create a request-scoped domain service over the app-owned repository."""
 
-    from schemabridge.services.workflow_persistence import WorkflowPersistenceService
+    from schemabridge.services.workflows.persistence import WorkflowPersistenceService
 
     return WorkflowPersistenceService(repository)
 
@@ -157,7 +157,7 @@ def get_migration_job_submission_service(
 ):
     """Build the service that validates and records queued migration jobs."""
 
-    from schemabridge.services.migration_jobs import MigrationJobSubmissionService
+    from schemabridge.services.jobs.lifecycle import MigrationJobSubmissionService
 
     return MigrationJobSubmissionService(persistence)
 
@@ -171,7 +171,7 @@ def get_workflow_planning_orchestrator(
 ):
     """Assemble planning coordination over request-scoped dependencies."""
 
-    from schemabridge.services.workflow_orchestration import WorkflowPlanningOrchestrator
+    from schemabridge.services.workflows.planning import WorkflowPlanningOrchestrator
 
     return WorkflowPlanningOrchestrator(
         persistence,
@@ -190,7 +190,7 @@ def get_workflow_execution_orchestrator(
 ):
     """Assemble approval-gated execution coordination."""
 
-    from schemabridge.services.workflow_execution import WorkflowExecutionOrchestrator
+    from schemabridge.services.workflows.execution import WorkflowExecutionOrchestrator
 
     return WorkflowExecutionOrchestrator(
         persistence,
@@ -206,7 +206,7 @@ def get_workflow_transport_orchestrator(
 ):
     """Assemble the durable source-to-managed-staging coordinator."""
 
-    from schemabridge.services.workflow_transport import WorkflowTransportOrchestrator
+    from schemabridge.services.workflows.transport import WorkflowTransportOrchestrator
 
     return WorkflowTransportOrchestrator(
         persistence,
@@ -221,7 +221,7 @@ def get_workflow_validation_orchestrator(
 ):
     """Assemble durable validation and reconciliation coordination."""
 
-    from schemabridge.services.workflow_validation import WorkflowValidationOrchestrator
+    from schemabridge.services.workflows.validation import WorkflowValidationOrchestrator
 
     return WorkflowValidationOrchestrator(
         persistence,

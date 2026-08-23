@@ -7,8 +7,8 @@ from schemabridge.api.dependencies import get_target_execution_registry
 from schemabridge.models.mapping import GeneratedTransformationSql, SqlDialect
 from schemabridge.models.transport import TransportRelation
 from schemabridge.persistence.errors import WorkflowUnsafeGeneratedStatementError
-from schemabridge.services.transformation_sql import InvalidTransformationPlanError
-from schemabridge.services.validation_sql import compile_validation_sql
+from schemabridge.mapping.sql import InvalidTransformationPlanError
+from schemabridge.validation.sql import compile_validation_sql
 from schemabridge.target_execution import (
     PostgreSqlTargetExecutionAdapter,
     TargetExecutionAdapter,
@@ -19,7 +19,7 @@ from schemabridge.services.migration_execution import (
     PreparedMigrationTarget,
     TargetExecutionDisposition,
 )
-from tests.test_transformation_sql import _approved
+from tests.support.builders import approved_mapping_plan as _approved
 
 
 STAGING = TransportRelation(

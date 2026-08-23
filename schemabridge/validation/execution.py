@@ -15,8 +15,8 @@ from schemabridge.models.validation import (
     ValidationExecutionStatus,
 )
 from schemabridge.services.database_service import get_database_service
-from schemabridge.services.reconciliation import reconcile_validation_results
-from schemabridge.services.validation_sql import compile_validation_sql
+from schemabridge.validation.reconciliation import reconcile_validation_results
+from schemabridge.validation.sql import compile_validation_sql
 
 
 class ValidationApprovalRequiredError(ValueError):

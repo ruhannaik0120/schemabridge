@@ -16,12 +16,15 @@ from schemabridge.models.mapping import (
     TransformationExpressionType,
 )
 from schemabridge.models.metadata import CanonicalType
-from schemabridge.models.validation import *
-from schemabridge.services.transformation_sql import (
+from schemabridge.models.validation import (
+    GeneratedValidationSql,
+    ValidationCheckDefinition,
+    ValidationCheckType,
+)
+from schemabridge.mapping.sql import (
     InvalidTransformationPlanError,
     UnsupportedTransformationError,
 )
-
 
 _VALIDATION_TYPES = {
     SqlDialect.POSTGRESQL: {
@@ -262,7 +265,10 @@ def compile_validation_sql(
         # PostgreSQL selects the database at connection time.  PostgreSQL
         # relation syntax is therefore schema.table, not catalog.schema.table.
         target_relation = ".".join(
-            (_quote(target_dialect, target_schema), _quote(target_dialect, target_table))
+            (
+                _quote(target_dialect, target_schema),
+                _quote(target_dialect, target_table),
+            )
         )
     elif target_dialect is SqlDialect.MYSQL:
         # MySQL uses one database name where the canonical model has both a
@@ -271,7 +277,10 @@ def compile_validation_sql(
         if target_database != target_schema:
             raise InvalidTransformationPlanError("Invalid validation plan.")
         target_relation = ".".join(
-            (_quote(target_dialect, target_database), _quote(target_dialect, target_table))
+            (
+                _quote(target_dialect, target_database),
+                _quote(target_dialect, target_table),
+            )
         )
     else:
         target_relation = ".".join(

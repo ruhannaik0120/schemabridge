@@ -7,14 +7,14 @@ from uuid import UUID
 from schemabridge.models.migration_job import MigrationJobStage, MigrationJobStatus
 from schemabridge.models.validation import MigrationValidationExecutionReport
 from schemabridge.models.workflow import MigrationWorkflowStatus
-from schemabridge.services.migration_job_pipeline import MigrationJobValidationStep
-from schemabridge.services.migration_jobs import MigrationJobCompletionService
-from schemabridge.services.reconciliation import reconcile_validation_results
-from schemabridge.services.validation_sql import compile_validation_sql
-from schemabridge.services.workflow_persistence import WorkflowPersistenceService
-from schemabridge.services.workflow_validation import WorkflowValidationOrchestrator
+from schemabridge.services.jobs.pipeline import MigrationJobValidationStep
+from schemabridge.services.jobs.lifecycle import MigrationJobCompletionService
+from schemabridge.validation.reconciliation import reconcile_validation_results
+from schemabridge.validation.sql import compile_validation_sql
+from schemabridge.services.workflows.persistence import WorkflowPersistenceService
+from schemabridge.services.workflows.validation import WorkflowValidationOrchestrator
 from tests.test_migration_job_execution_step import _execution_context
-from tests.test_migration_job_repository import JOB_ID
+from tests.support.jobs import JOB_ID
 from tests.test_workflow_validation_api import FakeValidationExecutor
 
 

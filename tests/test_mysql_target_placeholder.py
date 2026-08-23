@@ -11,7 +11,7 @@ from schemabridge.api.dependencies import get_target_execution_registry
 from schemabridge.models.mapping import SqlDialect
 from schemabridge.models.transport import TransportRelation
 from schemabridge.persistence.errors import WorkflowUnsafeGeneratedStatementError
-from schemabridge.services.transformation_sql import InvalidTransformationPlanError
+from schemabridge.mapping.sql import InvalidTransformationPlanError
 from schemabridge.target_execution import (
     MySqlTargetExecutionAdapter,
     TargetExecutionAdapter,
@@ -20,7 +20,7 @@ from schemabridge.target_execution import (
 )
 from tests.fakes.workflow_repository import InMemoryWorkflowRepository
 from tests.test_migration_api import _workflow_tables
-from tests.test_transformation_sql import _approved
+from tests.support.builders import approved_mapping_plan as _approved
 from tests.test_workflow_orchestration_api import _approve, _discover_pair, _mapping, _mutate
 from tests.test_workflow_persistence_api import BASE, _create_payload
 
