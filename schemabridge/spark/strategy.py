@@ -21,11 +21,17 @@ from .jdbc import SparkJdbcReadPlanFactory
 from .partitioning import SparkJdbcPartitionPlanner
 from .reader import SparkJdbcDataFrameReader
 from .runtime import SparkSessionFactory
+from .snowflake_connector import (
+    SparkSnowflakeDataFrameReader,
+    SparkSnowflakeDataFrameWriter,
+    SparkSnowflakeReadPlanFactory,
+    SparkSnowflakeWritePlanFactory,
+)
 from .writer import SparkJdbcDataFrameWriter, SparkJdbcWritePlanFactory
 
 
 class SparkTransportStrategy:
-    """Move one eligible table with partitioned Spark JDBC, never to final target."""
+    """Move one eligible table through Spark, never directly to final target."""
 
     strategy_name = "SPARK_JDBC_PARTITIONED"
 
@@ -36,6 +42,8 @@ class SparkTransportStrategy:
         session_factory: SparkSessionFactory | None = None,
         dataframe_reader: SparkJdbcDataFrameReader | None = None,
         dataframe_writer: SparkJdbcDataFrameWriter | None = None,
+        snowflake_dataframe_reader: SparkSnowflakeDataFrameReader | None = None,
+        snowflake_dataframe_writer: SparkSnowflakeDataFrameWriter | None = None,
     ) -> None:
         if not isinstance(settings, SparkTransportSettings):
             raise TypeError("settings must be SparkTransportSettings.")
@@ -43,6 +51,8 @@ class SparkTransportStrategy:
         self.session_factory = session_factory or SparkSessionFactory()
         self.dataframe_reader = dataframe_reader or SparkJdbcDataFrameReader()
         self.dataframe_writer = dataframe_writer or SparkJdbcDataFrameWriter()
+        self.snowflake_dataframe_reader = snowflake_dataframe_reader or SparkSnowflakeDataFrameReader()
+        self.snowflake_dataframe_writer = snowflake_dataframe_writer or SparkSnowflakeDataFrameWriter()
 
     @staticmethod
     def _execute_query(connector: object) -> Callable[..., object]:
@@ -65,6 +75,50 @@ class SparkTransportStrategy:
             raise BatchTransportError("Spark transport query returned invalid evidence.")
         return value
 
+    def _load_dataframe(
+        self,
+        session: object,
+        source_reader: BatchSourceReader,
+        source_profile: ConnectionProfile,
+        source_table: TableMetadata,
+        *,
+        timeout_seconds: int,
+    ) -> object:
+        if source_profile.db_type == "snowflake":
+            return self.snowflake_dataframe_reader.load(
+                session, SparkSnowflakeReadPlanFactory.build(source_profile, source_table)
+            )
+        read_plan = SparkJdbcReadPlanFactory.build(source_profile, source_table)
+        source_query = self._execute_query(source_reader)
+        bounds = source_query(
+            SparkJdbcPartitionPlanner.bounds_query(read_plan, source_table),
+            database=source_profile.database,
+            timeout_seconds=timeout_seconds,
+            max_rows=1,
+        )
+        partition_plan = SparkJdbcPartitionPlanner.bind(
+            read_plan,
+            source_table,
+            lower_bound=self._integer(bounds, "lower_bound"),
+            upper_bound=self._integer(bounds, "upper_bound"),
+            num_partitions=self.settings.num_partitions,
+        )
+        return self.dataframe_reader.load(session, partition_plan)
+
+    def _append_dataframe(
+        self,
+        dataframe: object,
+        target_profile: ConnectionProfile,
+        definition: object,
+    ) -> object:
+        if target_profile.db_type == "snowflake":
+            write_plan = SparkSnowflakeWritePlanFactory.build(target_profile, definition)
+            self.snowflake_dataframe_writer.append(dataframe, write_plan)
+            return write_plan
+        write_plan = SparkJdbcWritePlanFactory.build(target_profile, definition)
+        self.dataframe_writer.append(dataframe, write_plan)
+        return write_plan
+
     def transfer(
         self,
         *,
@@ -86,21 +140,6 @@ class SparkTransportStrategy:
         if not isinstance(source_profile, ConnectionProfile) or not isinstance(target_profile, ConnectionProfile):
             raise BatchTransportError("Spark transport requires resolved connection profiles.")
         try:
-            read_plan = SparkJdbcReadPlanFactory.build(source_profile, source_table)
-            source_query = self._execute_query(source_reader)
-            bounds = source_query(
-                SparkJdbcPartitionPlanner.bounds_query(read_plan, source_table),
-                database=source_profile.database,
-                timeout_seconds=timeout_seconds,
-                max_rows=1,
-            )
-            partition_plan = SparkJdbcPartitionPlanner.bind(
-                read_plan,
-                source_table,
-                lower_bound=self._integer(bounds, "lower_bound"),
-                upper_bound=self._integer(bounds, "upper_bound"),
-                num_partitions=self.settings.num_partitions,
-            )
             staging_relation = BatchTransportService.staging_relation(
                 transport_id=transport_id,
                 target_database=target_database,
@@ -108,15 +147,20 @@ class SparkTransportStrategy:
             )
             definition = BatchTransportService.staging_definition(source_table, staging_relation)
             staging_writer.prepare_staging_table(definition=definition, timeout_seconds=timeout_seconds)
-            write_plan = SparkJdbcWritePlanFactory.build(target_profile, definition)
 
             session = self.session_factory.create(self.settings)
             try:
-                dataframe = self.dataframe_reader.load(session, partition_plan)
+                dataframe = self._load_dataframe(
+                    session,
+                    source_reader,
+                    source_profile,
+                    source_table,
+                    timeout_seconds=timeout_seconds,
+                )
                 rows_read = dataframe.count()
                 if isinstance(rows_read, bool) or not isinstance(rows_read, int) or rows_read < 0:
                     raise BatchTransportError("Spark returned an invalid source row count.")
-                self.dataframe_writer.append(dataframe, write_plan)
+                write_plan = self._append_dataframe(dataframe, target_profile, definition)
             finally:
                 self.session_factory.stop(session)
 
