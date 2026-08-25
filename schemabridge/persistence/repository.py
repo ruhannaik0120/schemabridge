@@ -56,6 +56,13 @@ class WorkflowRepository(Protocol):
 
         ...
 
+    def list_workflows(
+        self, *, offset: int = 0, limit: int = 100
+    ) -> tuple[MigrationWorkflow, ...]:
+        """Return a bounded newest-first page of durable workflow summaries."""
+
+        ...
+
     def create_migration_job(
         self, job: MigrationJob
     ) -> tuple[MigrationJob, bool]:
@@ -65,6 +72,13 @@ class WorkflowRepository(Protocol):
 
     def get_migration_job(self, job_id: UUID) -> MigrationJob:
         """Load one migration job or raise the job not-found error."""
+
+        ...
+
+    def list_migration_jobs(
+        self, *, offset: int = 0, limit: int = 100
+    ) -> tuple[MigrationJob, ...]:
+        """Return a bounded newest-first page of durable migration jobs."""
 
         ...
 

@@ -7,6 +7,8 @@ are assembled per request around that shared repository.
 """
 
 from collections.abc import Callable
+import os
+import os
 
 from fastapi import Depends, Request
 
@@ -18,6 +20,22 @@ def get_profile_resolver() -> Callable:
     from schemabridge.services.profile_registry import ProfileRegistry
 
     return ProfileRegistry.from_json
+
+
+def get_profile_registry():
+    """Return configured profile metadata without opening any database connection."""
+
+    from schemabridge.services.profile_registry import ProfileRegistry
+
+    return ProfileRegistry.from_json(os.getenv("DB_PROFILES_JSON", ""))
+
+
+def get_profile_registry():
+    """Return configured profile metadata without opening any database connection."""
+
+    from schemabridge.services.profile_registry import ProfileRegistry
+
+    return ProfileRegistry.from_json(os.getenv("DB_PROFILES_JSON", ""))
 
 
 def get_schema_discovery_service() -> Callable:

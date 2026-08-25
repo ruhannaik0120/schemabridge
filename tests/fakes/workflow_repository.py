@@ -94,6 +94,15 @@ class InMemoryWorkflowRepository:
             except KeyError:
                 raise WorkflowNotFoundError() from None
 
+    def list_workflows(self, *, offset=0, limit=100):
+        with self._lock:
+            values = sorted(
+                self._workflows.values(),
+                key=lambda item: (item.updated_at, str(item.workflow_id)),
+                reverse=True,
+            )
+            return tuple(values[offset : offset + limit])
+
     def create_migration_job(self, job):
         with self._lock:
             scope = f"{job.workflow_id}:MIGRATION_JOB"
@@ -134,6 +143,15 @@ class InMemoryWorkflowRepository:
                 return self._jobs[job_id]
             except KeyError:
                 raise MigrationJobNotFoundError() from None
+
+    def list_migration_jobs(self, *, offset=0, limit=100):
+        with self._lock:
+            values = sorted(
+                self._jobs.values(),
+                key=lambda item: (item.queued_at, str(item.job_id)),
+                reverse=True,
+            )
+            return tuple(values[offset : offset + limit])
 
     def claim_next_migration_job(self, started_at):
         with self._lock:

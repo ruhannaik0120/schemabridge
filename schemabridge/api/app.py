@@ -102,6 +102,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     # drivers, profiles, and live connections.
     from .routes.migrations import router as migrations_router
     from .routes.jobs import router as jobs_router
+    from .routes.profiles import router as profiles_router
     from .routes.workflows import router as workflows_router
 
     app = FastAPI(
@@ -114,6 +115,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             {"name": "health", "description": "Operational health checks."},
             {"name": "migrations", "description": "Versioned migration workflows."},
             {"name": "migration-jobs", "description": "Durable background migration work orders."},
+            {"name": "profiles", "description": "Credential-free configured connection profile metadata."},
         ],
         responses={
             422: {"model": ErrorResponse, "description": "Request validation failed."},
@@ -129,6 +131,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.include_router(migrations_router)
     app.include_router(workflows_router)
     app.include_router(jobs_router)
+    app.include_router(profiles_router)
     return app
 
 

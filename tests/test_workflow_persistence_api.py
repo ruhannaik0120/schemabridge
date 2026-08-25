@@ -71,6 +71,23 @@ def test_create_persists_and_survives_service_reconstruction_and_http_retrieval(
     assert reconstructed.source_relation.object_name == _create_payload()["source_relation"]["object_name"]
 
 
+def test_list_returns_a_bounded_workflow_summary_page() -> None:
+    repository = InMemoryWorkflowRepository()
+    with TestClient(_app_with_repository(repository)) as client:
+        first = _create(client, key="create-list-1")
+        second_payload = _create_payload() | {"display_name": "Second durable migration"}
+        second = _create(client, key="create-list-2", payload=second_payload)
+        page = client.get(BASE, params={"offset": 0, "limit": 1})
+        remaining = client.get(BASE, params={"offset": 1, "limit": 1})
+
+    assert page.status_code == 200 and remaining.status_code == 200
+    assert page.json()["limit"] == 1 and len(page.json()["items"]) == 1
+    assert {page.json()["items"][0]["workflow_id"], remaining.json()["items"][0]["workflow_id"]} == {
+        first.json()["workflow_id"],
+        second.json()["workflow_id"],
+    }
+
+
 def test_create_and_transition_idempotency_concurrency_and_invalid_transition_errors() -> None:
     repository = InMemoryWorkflowRepository()
     with TestClient(_app_with_repository(repository)) as client:
