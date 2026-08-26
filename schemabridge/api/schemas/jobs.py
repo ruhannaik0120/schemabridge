@@ -78,9 +78,16 @@ class MigrationJobCreateResponse(ApiSchema):
     created: bool
 
 
+class MigrationJobListResponse(ApiSchema):
+    items: tuple[MigrationJobSchema, ...]
+    offset: NonNegativeInt
+    limit: PositiveInt
+
+
 __all__ = [
     "MigrationJobCreateRequest",
     "MigrationJobCreateResponse",
     "MigrationJobBatchProgressSchema",
     "MigrationJobSchema",
+    "MigrationJobListResponse",
 ]

@@ -106,6 +106,29 @@ docker compose up -d control-plane
 
 Open Swagger UI at <http://localhost:8000/docs>. See [SETUP.md](docs/SETUP.md) for named PostgreSQL, MySQL, and Snowflake profiles, required credentials, Docker Compose, environment variables, and troubleshooting.
 
+### React frontend
+
+With the API running in one terminal, start the local frontend in another:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open the address Vite prints (normally <http://localhost:5173>). The first screen is a guided migration overview and checks whether the local FastAPI process is reachable. It does not run database operations. Vite forwards local `/health` and `/api` requests to the API at `127.0.0.1:8000`; use `frontend/.env.example` when a deployed frontend needs a different API address.
+
+To run the opt-in live browser proof (Docker PostgreSQL → React → FastAPI → PostgreSQL), install Playwright's Chromium runtime once, then run:
+
+```powershell
+cd frontend
+npx playwright install chromium
+cd ..
+.\scripts\run_frontend_e2e.ps1
+```
+
+The script creates an isolated, randomly named local PostgreSQL database with tiny test tables. It proves both the guided migration path and a queued job processed by one local worker, then removes the entire temporary database and its temporary local processes afterward. Your normal Docker control-plane database is not used for this proof.
+
 ## Repository layout
 
 ```text
@@ -120,6 +143,7 @@ schemabridge/persistence/         Control-plane repository, codecs, and migratio
 tests/                            Credential-free tests and optional live contracts
 scripts/                          Setup, verification, migrations, demos, and worker commands
 docs/                             Product, architecture, setup, and study guides
+frontend/                         React and TypeScript operator interface
 ```
 
 ## Current limitations
@@ -128,7 +152,7 @@ docs/                             Product, architecture, setup, and study guides
 - PostgreSQL, MySQL, and Snowflake have an optional, automatically selected Spark staging path for eligible large tables. PostgreSQL/MySQL use JDBC partitioning; Snowflake uses its dedicated Spark connector when that runtime package is configured.
 - Validation compares generated aggregates, not every row.
 - Uncertain remote outcomes require manual investigation.
-- The durable workflow has no authentication, frontend, file ingestion, profiling, or production deployment layer.
+- The initial React operator interface supports workflow creation, schema discovery, mapping review and approval, guided execution, durable background-job submission, and job/history viewing. Authentication, file ingestion, profiling, and production deployment remain to be added.
 - SQL Server remains a generic connector only. The three supported durable databases have mostly unit/fake-driver coverage; live end-to-end coverage remains limited.
 - Static packaging and Compose configuration are tested; a running Docker deployment is not claimed as verified here.
 

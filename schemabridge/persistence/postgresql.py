@@ -410,6 +410,23 @@ class PostgreSQLWorkflowRepository:
         finally:
             self._close(connection)
 
+    def list_workflows(self, *, offset=0, limit=100):
+        connection = self._open()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {_WF_COLUMNS} FROM migration_workflows "
+                    "ORDER BY updated_at DESC, workflow_id DESC OFFSET %s LIMIT %s",
+                    (offset, limit),
+                )
+                return tuple(self._workflow(row) for row in cursor.fetchall())
+        except WorkflowError:
+            raise
+        except Exception:
+            raise WorkflowPersistenceError() from None
+        finally:
+            self._close(connection)
+
     def create_migration_job(self, job):
         if (
             not isinstance(job, MigrationJob)
@@ -512,6 +529,23 @@ class PostgreSQLWorkflowRepository:
                 if row is None:
                     raise MigrationJobNotFoundError()
                 return self._migration_job(row)
+        except WorkflowError:
+            raise
+        except Exception:
+            raise WorkflowPersistenceError() from None
+        finally:
+            self._close(connection)
+
+    def list_migration_jobs(self, *, offset=0, limit=100):
+        connection = self._open()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {_JOB_COLUMNS} FROM migration_jobs "
+                    "ORDER BY queued_at DESC, job_id DESC OFFSET %s LIMIT %s",
+                    (offset, limit),
+                )
+                return tuple(self._migration_job(row) for row in cursor.fetchall())
         except WorkflowError:
             raise
         except Exception:

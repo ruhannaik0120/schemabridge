@@ -38,3 +38,31 @@ class ErrorDetail(ApiSchema):
 
 class ErrorResponse(ApiSchema):
     error: ErrorDetail
+
+
+class ConnectionProfileSummary(ApiSchema):
+    """Credential-free configured connection profile metadata."""
+
+    name: BoundedText
+    db_type: BoundedText
+    database: str
+    database_present: bool
+    write_enabled: bool
+
+
+class ConnectionProfileListResponse(ApiSchema):
+    items: list[ConnectionProfileSummary]
+
+
+class ConnectionProfileSummary(ApiSchema):
+    """Credential-free configured connection profile metadata."""
+
+    name: BoundedText
+    db_type: BoundedText
+    database: str
+    database_present: bool
+    write_enabled: bool
+
+
+class ConnectionProfileListResponse(ApiSchema):
+    items: list[ConnectionProfileSummary]

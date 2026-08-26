@@ -146,11 +146,17 @@ class WorkflowPersistenceService:
     def get_workflow(self, workflow_id):
         return self.repository.get_workflow(workflow_id)
 
+    def list_workflows(self, *, offset=0, limit=100):
+        return self.repository.list_workflows(offset=offset, limit=limit)
+
     def create_migration_job(self, job):
         return self.repository.create_migration_job(job)
 
     def get_migration_job(self, job_id):
         return self.repository.get_migration_job(job_id)
+
+    def list_migration_jobs(self, *, offset=0, limit=100):
+        return self.repository.list_migration_jobs(offset=offset, limit=limit)
 
     def claim_next_migration_job(self, started_at):
         return self.repository.claim_next_migration_job(started_at)

@@ -82,6 +82,7 @@ from ..schemas.workflows import (
     MappingPlanArtifactRequest,
     MigrationAuditEventListResponse,
     MigrationWorkflowSchema,
+    MigrationWorkflowListResponse,
     SourceDiscoveryArtifactRequest,
     TargetDiscoveryArtifactRequest,
     TransformationPreviewArtifactRequest,
@@ -224,6 +225,31 @@ async def create_workflow(
         return workflow_to_api(result)
     except (TypeError, ValueError):
         raise ApiError(400, "INVALID_WORKFLOW_COMMAND", "The workflow command is invalid.") from None
+    except Exception as error:
+        _raise_workflow_error(error)
+        raise
+
+
+@router.get(
+    "",
+    operation_id="workflow_list",
+    summary="List durable migration workflows",
+    response_model=MigrationWorkflowListResponse,
+    responses=_ERRORS,
+)
+async def list_workflows(
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    service=Depends(get_workflow_persistence_service),
+) -> MigrationWorkflowListResponse:
+    """Return a bounded newest-first workflow page for the operator dashboard."""
+
+    try:
+        return MigrationWorkflowListResponse(
+            items=tuple(workflow_to_api(item) for item in service.list_workflows(offset=offset, limit=limit)),
+            offset=offset,
+            limit=limit,
+        )
     except Exception as error:
         _raise_workflow_error(error)
         raise

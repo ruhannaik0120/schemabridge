@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 
 from schemabridge.persistence.errors import (
     MigrationJobAlreadyActiveError,
@@ -26,6 +26,7 @@ from ..schemas.common import ErrorResponse
 from ..schemas.jobs import (
     MigrationJobCreateRequest,
     MigrationJobCreateResponse,
+    MigrationJobListResponse,
     MigrationJobSchema,
 )
 
@@ -102,6 +103,31 @@ async def create_migration_job(
         return MigrationJobCreateResponse(job=migration_job_to_api(job), created=created)
     except (TypeError, ValueError):
         raise ApiError(400, "INVALID_MIGRATION_JOB_COMMAND", "The migration job command is invalid.") from None
+    except Exception as error:
+        _raise_job_error(error)
+        raise
+
+
+@router.get(
+    "/jobs",
+    operation_id="migration_job_list",
+    summary="List durable migration jobs",
+    response_model=MigrationJobListResponse,
+    responses=_ERRORS,
+)
+async def list_migration_jobs(
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    service=Depends(get_migration_job_submission_service),
+) -> MigrationJobListResponse:
+    """Return a bounded newest-first job page for the operator dashboard."""
+
+    try:
+        return MigrationJobListResponse(
+            items=tuple(migration_job_to_api(item) for item in service.list(offset=offset, limit=limit)),
+            offset=offset,
+            limit=limit,
+        )
     except Exception as error:
         _raise_job_error(error)
         raise

@@ -63,6 +63,20 @@ def test_create_replay_and_get_job() -> None:
     assert retrieved.json() == created.json()["job"]
 
 
+def test_list_returns_created_job_summary() -> None:
+    with _client() as client:
+        created = client.post(
+            CREATE_URL,
+            json=_payload(),
+            headers={"Idempotency-Key": "list-background-job"},
+        )
+        listed = client.get("/api/v1/migrations/jobs", params={"offset": 0, "limit": 20})
+
+    assert created.status_code == 201 and listed.status_code == 200
+    assert listed.json()["limit"] == 20
+    assert [item["job_id"] for item in listed.json()["items"]] == [created.json()["job"]["job_id"]]
+
+
 def test_create_rejects_missing_header_and_server_controlled_fields() -> None:
     with _client() as client:
         missing_header = client.post(CREATE_URL, json=_payload())

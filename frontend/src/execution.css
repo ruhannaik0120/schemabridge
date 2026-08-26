@@ -1,0 +1,1 @@
+.danger-button { margin-top: 0; padding: 12px 18px; border: 0; border-radius: 8px; background: #c53e3e; color: white; font-weight: 700; cursor: pointer; box-shadow: 0 6px 13px rgb(170 38 38 / 16%); }.danger-button:hover { background: #ad2e2e; }.danger-button:disabled { background: #dda6a6; cursor: not-allowed; }

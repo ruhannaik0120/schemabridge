@@ -376,6 +376,12 @@ class WorkflowArtifactListResponse(ApiSchema):
     limit: PositiveInt
 
 
+class MigrationWorkflowListResponse(ApiSchema):
+    items: tuple[MigrationWorkflowSchema, ...]
+    offset: NonNegativeInt
+    limit: PositiveInt
+
+
 class MigrationAuditEventListResponse(ApiSchema):
     items: tuple[MigrationAuditEventSchema, ...]
     offset: NonNegativeInt

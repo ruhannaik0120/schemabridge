@@ -137,6 +137,9 @@ class MigrationJobSubmissionService:
     def get(self, job_id: UUID) -> MigrationJob:
         return self.persistence.get_migration_job(job_id)
 
+    def list(self, *, offset: int = 0, limit: int = 100) -> tuple[MigrationJob, ...]:
+        return self.persistence.list_migration_jobs(offset=offset, limit=limit)
+
 
 class MigrationJobClaimService:
     """Give one worker exclusive ownership of the oldest queued job."""
