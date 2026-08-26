@@ -128,6 +128,7 @@ The normal suite does not use live databases. The following variables enable exp
 | `SCHEMABRIDGE_CONTROL_PLANE_TEST_DSN` | DSN for that contract; its database name must clearly contain `test`. |
 | `SCHEMABRIDGE_POSTGRES_INTEGRATION` | Set to `1` to enable live PostgreSQL discovery coverage. |
 | `SCHEMABRIDGE_POSTGRES_HOST`, `SCHEMABRIDGE_POSTGRES_PORT`, `SCHEMABRIDGE_POSTGRES_DATABASE`, `SCHEMABRIDGE_POSTGRES_USERNAME`, `SCHEMABRIDGE_POSTGRES_PASSWORD` | Connection values for the opt-in PostgreSQL discovery check. |
+| `SCHEMABRIDGE_STRICT_VALIDATION_POSTGRES_INTEGRATION` | Set to `1` to enable the disposable PostgreSQL strict-validation proof using the same `SCHEMABRIDGE_POSTGRES_*` connection values. |
 | `DB_SMOKE_TEST_CONNECT` | Set to `true` only when the generic connector smoke test should make a live connection. |
 | `SCHEMABRIDGE_SPARK_POSTGRES_INTEGRATION` and `SCHEMABRIDGE_SPARK_POSTGRES_*` | Enable and configure the disposable PostgreSQL-to-Spark-to-PostgreSQL proof. |
 | `SCHEMABRIDGE_SPARK_MYSQL_INTEGRATION` and `SCHEMABRIDGE_SPARK_MYSQL_*` | Enable and configure the disposable MySQL-to-Spark-to-MySQL proof. |
@@ -164,6 +165,8 @@ POSIX:
 ```
 
 The normal suite uses fakes at remote boundaries. Live integration contracts are skipped unless explicitly enabled.
+
+For the optional exact primary-key validation mode, its eligibility rules, and the PostgreSQL duplicate-key limitation, see [Strict validation](STRICT_VALIDATION.md).
 
 ## Inspect control-plane migrations without a database
 

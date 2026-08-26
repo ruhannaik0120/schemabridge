@@ -188,7 +188,7 @@ This ordering prevents a stale preview, altered SQL, duplicate caller, or disabl
 
 `WorkflowValidationOrchestrator.validate` requires successful committed execution evidence and the approved mapping. It recompiles a safe validation plan, claims a validation run, marks it running, and delegates to `MigrationValidationExecutionService`.
 
-The execution service resolves the source and target profiles independently and asks each connector for its validation SQL dialect capability. PostgreSQL, MySQL, and Snowflake are implemented on both sides. It executes one read-only aggregate query per side and rejects malformed multi-row results.
+The execution service resolves the source and target profiles independently and asks each connector for its validation SQL dialect capability. PostgreSQL, MySQL, and Snowflake are implemented on both sides. It executes one read-only aggregate query per side and rejects malformed multi-row results. A caller may opt into strict primary-key reconciliation. That path rehydrates the latest persisted source and target discovery snapshots for the workflow and runs only when both primary keys are complete and the approved mapping is a direct, ordered one-to-one key mapping. It then reads generated, ordered key pages from both systems and persists counts only, never key values. See [Strict validation](STRICT_VALIDATION.md).
 
 ### 9. Reconciliation
 

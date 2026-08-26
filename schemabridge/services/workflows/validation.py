@@ -32,6 +32,7 @@ from schemabridge.models.workflow_validation import WorkflowValidationRun, Workf
 from schemabridge.persistence.artifact_codec import (
     approved_mapping_plan_from_artifact,
     execution_evidence_from_artifact,
+    table_metadata_from_artifact,
     validation_execution_report_from_artifact,
     validation_preview_from_artifact,
 )
@@ -132,6 +133,8 @@ class WorkflowValidationOrchestrator:
         source_profile_id: str,
         target_profile_id: str,
         timeout_seconds: int | None,
+        strict_primary_key: bool,
+        primary_key_batch_size: int,
     ) -> str:
         """Hash all validation inputs used to recognize an exact replay."""
 
@@ -145,6 +148,8 @@ class WorkflowValidationOrchestrator:
                 "source_profile_id": source_profile_id,
                 "target_profile_id": target_profile_id,
                 "timeout_seconds": timeout_seconds,
+                "strict_primary_key": strict_primary_key,
+                "primary_key_batch_size": primary_key_batch_size,
             },
         )
 
@@ -210,6 +215,8 @@ class WorkflowValidationOrchestrator:
         source_profile_id: str,
         target_profile_id: str,
         timeout_seconds: int | None,
+        strict_primary_key: bool = False,
+        primary_key_batch_size: int = 500,
         idempotency_key: str,
         actor_type: AuditActorType,
         actor_reference: str | None,
@@ -230,6 +237,8 @@ class WorkflowValidationOrchestrator:
             source_profile_id=source_profile_id,
             target_profile_id=target_profile_id,
             timeout_seconds=timeout_seconds,
+            strict_primary_key=strict_primary_key,
+            primary_key_batch_size=primary_key_batch_size,
         )
         # A completed first call has already changed workflow state, so replay
         # resolution must happen before current-state eligibility checks.
@@ -242,6 +251,8 @@ class WorkflowValidationOrchestrator:
             return self._terminal_result(workflow_id, replay)
 
         workflow = self.persistence.get_workflow(workflow_id)
+        source_table_metadata = None
+        target_table_metadata = None
         if replay is None:
             current = workflow.version == expected_version
             if current and workflow.status is MigrationWorkflowStatus.EXECUTION_RECOVERY_REQUIRED:
@@ -270,6 +281,20 @@ class WorkflowValidationOrchestrator:
             if execution.status is not MigrationExecutionAttemptStatus.SUCCEEDED or execution.transaction_outcome is not MigrationTransactionOutcome.COMMITTED:
                 raise WorkflowValidationNotReadyError()
             approved = approved_mapping_plan_from_artifact(approved_artifact)
+            if strict_primary_key:
+                source_discovery = self.persistence.get_latest_artifact(
+                    workflow_id, WorkflowArtifactType.SOURCE_DISCOVERY
+                )
+                target_discovery = self.persistence.get_latest_artifact(
+                    workflow_id, WorkflowArtifactType.TARGET_DISCOVERY
+                )
+                if source_discovery is None or target_discovery is None:
+                    raise WorkflowValidationNotReadyError()
+                try:
+                    source_table_metadata = table_metadata_from_artifact(source_discovery)
+                    target_table_metadata = table_metadata_from_artifact(target_discovery)
+                except Exception:
+                    raise WorkflowValidationNotReadyError() from None
             if not approved.approved_mappings or any(item.status is MappingApprovalStatus.PENDING for item in approved.approvals):
                 raise WorkflowValidationNotReadyError()
             if workflow.target_relation.catalog_name is None:
@@ -313,6 +338,14 @@ class WorkflowValidationOrchestrator:
                     "validation_plan_hash": plan_hash,
                     "source_profile_id": source_profile_id,
                     "target_profile_id": target_profile_id,
+                    "strict_primary_key": strict_primary_key,
+                    "primary_key_batch_size": primary_key_batch_size,
+                    "source_discovery_hash": (
+                        source_discovery.payload_sha256 if strict_primary_key else None
+                    ),
+                    "target_discovery_hash": (
+                        target_discovery.payload_sha256 if strict_primary_key else None
+                    ),
                 },
             )
             proposed = WorkflowValidationRun(
@@ -350,6 +383,20 @@ class WorkflowValidationOrchestrator:
             plan_artifact = self._artifact(workflow_id, run.validation_preview_artifact_version, WorkflowArtifactType.VALIDATION_PREVIEW, require_latest=False)
             approved_artifact = self._artifact(workflow_id, run.approved_mapping_artifact_version, WorkflowArtifactType.APPROVED_MAPPING_PLAN, require_latest=False)
             approved = approved_mapping_plan_from_artifact(approved_artifact)
+            if strict_primary_key:
+                source_discovery = self.persistence.get_latest_artifact(
+                    workflow_id, WorkflowArtifactType.SOURCE_DISCOVERY
+                )
+                target_discovery = self.persistence.get_latest_artifact(
+                    workflow_id, WorkflowArtifactType.TARGET_DISCOVERY
+                )
+                if source_discovery is None or target_discovery is None:
+                    raise WorkflowValidationNotReadyError()
+                try:
+                    source_table_metadata = table_metadata_from_artifact(source_discovery)
+                    target_table_metadata = table_metadata_from_artifact(target_discovery)
+                except Exception:
+                    raise WorkflowValidationNotReadyError() from None
 
         # Execute the persisted plan, not a freshly supplied client payload, so
         # the eventual evidence refers to exactly what the claim recorded.
@@ -381,6 +428,10 @@ class WorkflowValidationOrchestrator:
             target_table=workflow.target_relation.object_name,
             timeout_seconds=run.timeout_seconds,
             explicitly_approved=True,
+            strict_primary_key=strict_primary_key,
+            source_table_metadata=source_table_metadata if strict_primary_key else None,
+            target_table_metadata=target_table_metadata if strict_primary_key else None,
+            primary_key_batch_size=primary_key_batch_size,
         )
         try:
             report = self.validation_execution_service.run(request)

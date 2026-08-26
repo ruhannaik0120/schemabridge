@@ -26,6 +26,7 @@ from schemabridge.models.validation import (
     MigrationValidationExecutionReport,
     MigrationValidationExecutionRequest,
     MigrationValidationReport,
+    PrimaryKeyReconciliation,
     ValidationCheckDefinition,
     ValidationCheckResult,
 )
@@ -44,6 +45,7 @@ from ..schemas.migrations import (
     MappingEvidenceSchema,
     MappingReviewDecisionSchema,
     MigrationValidationReportSchema,
+    PrimaryKeyReconciliationSchema,
     TableIdentitySchema,
     TableMappingPlanSchema,
     TableMetadataSchema,
@@ -325,6 +327,12 @@ def validation_report_to_api(value: MigrationValidationReport) -> MigrationValid
     )
 
 
+def primary_key_reconciliation_to_api(
+    value: PrimaryKeyReconciliation,
+) -> PrimaryKeyReconciliationSchema:
+    return PrimaryKeyReconciliationSchema(**value.to_dict())
+
+
 def execution_report_to_api(value: MigrationValidationExecutionReport) -> ValidationExecutionResponse:
     return ValidationExecutionResponse(
         source_sql_summary=validation_sql_to_api(value.source_sql_summary),
@@ -332,6 +340,11 @@ def execution_report_to_api(value: MigrationValidationExecutionReport) -> Valida
         validation_report=validation_report_to_api(value.validation_report),
         source_execution_status=value.source_execution_status,
         target_execution_status=value.target_execution_status,
+        primary_key_reconciliation=(
+            primary_key_reconciliation_to_api(value.primary_key_reconciliation)
+            if value.primary_key_reconciliation is not None
+            else None
+        ),
         warnings=value.warnings,
     )
 

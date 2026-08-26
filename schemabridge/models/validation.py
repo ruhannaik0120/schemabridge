@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from schemabridge.models.discovery import TableMetadata
 from schemabridge.models.mapping import ApprovedTableMappingPlan, SqlDialect
 from schemabridge.models.metadata import _MetadataModel, _json_value
 
@@ -47,6 +48,42 @@ class ValidationExecutionStatus(str, Enum):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class PrimaryKeyReconciliation(_MetadataModel):
+    """Count exact key-set differences without persisting key values."""
+
+    source_key_count: int
+    target_key_count: int
+    missing_key_count: int
+    extra_key_count: int
+    source_duplicate_key_count: int
+    target_duplicate_key_count: int
+
+    def __post_init__(self):
+        for name in self.__dataclass_fields__:
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("Invalid primary-key reconciliation.")
+
+    @property
+    def matches(self) -> bool:
+        """Return whether both key multisets are identical and unique."""
+
+        return not any(
+            (
+                self.missing_key_count,
+                self.extra_key_count,
+                self.source_duplicate_key_count,
+                self.target_duplicate_key_count,
+            )
+        )
+
+    def to_dict(self):
+        return _json_value(
+            {name: getattr(self, name) for name in self.__dataclass_fields__}
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class MigrationValidationExecutionRequest(_MetadataModel):
     """Authorize and locate one paired validation execution."""
 
@@ -60,6 +97,10 @@ class MigrationValidationExecutionRequest(_MetadataModel):
     target_table: str
     timeout_seconds: int | None = None
     explicitly_approved: bool = False
+    strict_primary_key: bool = False
+    source_table_metadata: TableMetadata | None = None
+    target_table_metadata: TableMetadata | None = None
+    primary_key_batch_size: int = 500
 
     def __post_init__(self):
         if not all(
@@ -81,6 +122,17 @@ class MigrationValidationExecutionRequest(_MetadataModel):
             or self.timeout_seconds <= 0
         ):
             raise ValueError("Invalid validation execution request.")
+        if not isinstance(self.strict_primary_key, bool):
+            raise ValueError("Invalid validation execution request.")
+        if isinstance(self.primary_key_batch_size, bool) or not isinstance(
+            self.primary_key_batch_size, int
+        ) or self.primary_key_batch_size <= 0:
+            raise ValueError("Invalid validation execution request.")
+        if self.strict_primary_key and (
+            not isinstance(self.source_table_metadata, TableMetadata)
+            or not isinstance(self.target_table_metadata, TableMetadata)
+        ):
+            raise ValueError("Strict validation requires table metadata.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -94,6 +146,7 @@ class MigrationValidationExecutionReport(_MetadataModel):
     validation_report: MigrationValidationReport
     source_execution_status: ValidationExecutionStatus
     target_execution_status: ValidationExecutionStatus
+    primary_key_reconciliation: PrimaryKeyReconciliation | None = None
     warnings: tuple[str, ...] = ()
 
     def to_dict(self):

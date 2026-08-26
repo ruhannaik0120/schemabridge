@@ -1,4 +1,4 @@
-"""Expose configured connection-profile labels without revealing credentials."""
+"""Expose configured connection-profile labels without revealing secrets."""
 
 from typing import Annotated
 
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api/v1/profiles", tags=["profiles"])
 @router.get(
     "",
     operation_id="list_connection_profiles",
-    summary="List credential-free configured connection profiles",
+    summary="List safe configured connection profiles",
     response_model=ConnectionProfileListResponse,
 )
 async def list_connection_profiles(

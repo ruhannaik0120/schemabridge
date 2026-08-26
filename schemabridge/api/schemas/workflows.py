@@ -108,6 +108,8 @@ class WorkflowValidationCommand(WorkflowPlanningCommand):
     source_profile_id: ProfileId
     target_profile_id: ProfileId
     timeout_seconds: PositiveInt | None = None
+    strict_primary_key: bool = False
+    primary_key_batch_size: PositiveInt = 500
 
 
 class MigrationWorkflowSchema(ApiSchema):

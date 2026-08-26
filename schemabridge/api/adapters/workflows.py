@@ -16,6 +16,7 @@ from schemabridge.models.validation import (
     GeneratedValidationSql,
     MigrationValidationExecutionReport,
     MigrationValidationReport,
+    PrimaryKeyReconciliation,
     ValidationCheckDefinition,
     ValidationCheckResult,
 )
@@ -30,6 +31,7 @@ from ..schemas.migrations import (
     GeneratedTransformationSqlSchema,
     GeneratedValidationSqlSchema,
     MigrationValidationReportSchema,
+    PrimaryKeyReconciliationSchema,
     ValidationCheckDefinitionSchema,
     ValidationCheckResultSchema,
 )
@@ -117,6 +119,12 @@ def validation_report_to_domain(
     )
 
 
+def primary_key_reconciliation_to_domain(
+    value: PrimaryKeyReconciliationSchema,
+) -> PrimaryKeyReconciliation:
+    return PrimaryKeyReconciliation(**value.model_dump(mode="python"))
+
+
 def validation_execution_report_to_domain(
     value: ValidationExecutionArtifactPayload,
 ) -> MigrationValidationExecutionReport:
@@ -128,6 +136,11 @@ def validation_execution_report_to_domain(
         validation_report=validation_report_to_domain(value.validation_report),
         source_execution_status=value.source_execution_status,
         target_execution_status=value.target_execution_status,
+        primary_key_reconciliation=(
+            primary_key_reconciliation_to_domain(value.primary_key_reconciliation)
+            if value.primary_key_reconciliation is not None
+            else None
+        ),
         warnings=tuple(value.warnings),
     )
 

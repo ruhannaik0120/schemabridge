@@ -195,7 +195,7 @@ The source relation for the compiled statement is the managed staging relation r
 - **Purpose:** Executes generated source and target checks through separately resolved services.
 - **Called by:** Lower-level validation execution and workflow validation.
 - **Calls:** Two `DatabaseService` instances.
-- **Before reading:** Every validation statement is independently guarded and must return exactly one aggregate row.
+- **Before reading:** Every aggregate statement is independently guarded and must return exactly one row. When strict validation is requested, this service also checks persisted key metadata and direct mapping eligibility before generating bounded, read-only key pages.
 - **Interview question:** Why use separate services? Source and target have different vendors, profiles, permissions, and failure domains.
 
 ### `schemabridge/services/workflows/validation.py`
@@ -216,6 +216,12 @@ The source relation for the compiled statement is the managed staging relation r
 - **Calls:** Validation domain models only.
 - **Before reading:** It compares generated check IDs and normalized scalar metrics; it never fetches or compares full business rows. The caller must supply the exact approved mapping plan version, and the durable orchestrator rejects a report whose version does not match its claimed approval artifact.
 - **Interview question:** What happens on a mismatch? The durable orchestrator records the report and enters `VALIDATION_REVIEW_REQUIRED` rather than declaring the migration valid.
+
+### `schemabridge/validation/primary_key.py` and `key_batches.py`
+
+- **Purpose:** Decide whether exact primary-key reconciliation is safe, generate bounded ordered key reads, and compare key counts without persisting business key values.
+- **Called by:** `MigrationValidationExecutionService` only when the workflow validation command enables strict primary-key validation.
+- **Before reading:** Both discovered primary keys must be complete, and the approved mapping must preserve each key directly and in order. PostgreSQL prevents duplicates in a declared primary key, so its live proof covers missing and extra keys; duplicate-count behavior is unit-tested for systems with informational or non-enforced keys.
 
 ## Where is workflow data persisted?
 
