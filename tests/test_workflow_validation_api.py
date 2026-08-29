@@ -241,6 +241,27 @@ def test_mismatch_is_review_required_and_not_a_connector_failure() -> None:
     assert response.json()["result"]["validation_report"]["mismatched_count"] == 1
 
 
+def test_strict_primary_key_request_uses_persisted_discovery_snapshots() -> None:
+    repository = InMemoryWorkflowRepository()
+    migration, validation = FakeExecutor(), FakeValidationExecutor()
+    with TestClient(_app(repository, migration, validation)) as client:
+        _created, approved, _, executed = _executed(client)
+        response = _mutate(
+            client,
+            f"{BASE}/{executed['workflow']['workflow_id']}/validate",
+            _payload(approved, executed)
+            | {"strict_primary_key": True, "primary_key_batch_size": 25},
+            "strict-key",
+        )
+
+    assert response.status_code == 201
+    request = validation.requests[0]
+    assert request.strict_primary_key is True
+    assert request.primary_key_batch_size == 25
+    assert request.source_table_metadata is not None
+    assert request.target_table_metadata is not None
+
+
 def test_connector_failure_is_sanitized_quarantined_and_never_replayed() -> None:
     repository = InMemoryWorkflowRepository()
     migration, validation = FakeExecutor(), FakeValidationExecutor(fail=True)

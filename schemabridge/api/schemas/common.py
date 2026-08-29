@@ -41,21 +41,7 @@ class ErrorResponse(ApiSchema):
 
 
 class ConnectionProfileSummary(ApiSchema):
-    """Credential-free configured connection profile metadata."""
-
-    name: BoundedText
-    db_type: BoundedText
-    database: str
-    database_present: bool
-    write_enabled: bool
-
-
-class ConnectionProfileListResponse(ApiSchema):
-    items: list[ConnectionProfileSummary]
-
-
-class ConnectionProfileSummary(ApiSchema):
-    """Credential-free configured connection profile metadata."""
+    """Safe configured connection-profile metadata."""
 
     name: BoundedText
     db_type: BoundedText

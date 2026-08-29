@@ -24,6 +24,7 @@ from schemabridge.persistence.errors import (
     WorkflowStaleArtifactReferenceError,
 )
 from schemabridge.persistence.serialization import request_hash
+from schemabridge.services.jobs.queue import MigrationJobPublisher
 from schemabridge.services.workflows.persistence import WorkflowPersistenceService
 
 
@@ -40,10 +41,12 @@ class MigrationJobSubmissionService:
         *,
         clock: Callable[[], datetime] = _now,
         uuid_factory: Callable[[], UUID] = uuid4,
+        job_publisher: MigrationJobPublisher | None = None,
     ) -> None:
         self.persistence = persistence
         self.clock = clock
         self.uuid_factory = uuid_factory
+        self.job_publisher = job_publisher
 
     def _artifact(
         self,
@@ -132,7 +135,10 @@ class MigrationJobSubmissionService:
             idempotency_key=idempotency_key,
             actor_reference=actor_reference,
         )
-        return self.persistence.create_migration_job(job)
+        persisted_job, created = self.persistence.create_migration_job(job)
+        if created and self.job_publisher is not None:
+            self.job_publisher.publish(persisted_job.job_id)
+        return persisted_job, created
 
     def get(self, job_id: UUID) -> MigrationJob:
         return self.persistence.get_migration_job(job_id)
@@ -156,6 +162,10 @@ class MigrationJobClaimService:
     def claim_next(self) -> MigrationJob | None:
         return self.persistence.claim_next_migration_job(self.clock())
 
+    def claim(self, job_id: UUID) -> MigrationJob | None:
+        """Claim one specific queued job for an SQS notification."""
+
+        return self.persistence.claim_migration_job(job_id, self.clock())
 
 class MigrationJobProgressService:
     """Store trusted stage and batch progress for one claimed job."""

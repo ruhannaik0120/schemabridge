@@ -20,6 +20,7 @@ from schemabridge.models.mapping import (
 from schemabridge.models.metadata import CanonicalType
 from schemabridge.models.validation import (
     MigrationValidationStatus,
+    PrimaryKeyReconciliation,
     ValidationCheckType,
     ValidationExecutionStatus,
     ValidationStatus,
@@ -334,12 +335,22 @@ class MigrationValidationReportSchema(ApiSchema):
     approved_plan_version: PositiveInt
 
 
+class PrimaryKeyReconciliationSchema(ApiSchema):
+    source_key_count: NonNegativeInt
+    target_key_count: NonNegativeInt
+    missing_key_count: NonNegativeInt
+    extra_key_count: NonNegativeInt
+    source_duplicate_key_count: NonNegativeInt
+    target_duplicate_key_count: NonNegativeInt
+
+
 class ValidationExecutionResponse(ApiSchema):
     source_sql_summary: GeneratedValidationSqlSchema
     target_sql_summary: GeneratedValidationSqlSchema
     validation_report: MigrationValidationReportSchema
     source_execution_status: ValidationExecutionStatus
     target_execution_status: ValidationExecutionStatus
+    primary_key_reconciliation: PrimaryKeyReconciliationSchema | None = None
     warnings: tuple[SafeCode, ...] = ()
 
 

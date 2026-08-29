@@ -254,15 +254,16 @@ class DatabaseService:
         sql: str,
         parameters: tuple[object, ...] | list[object] | None = None,
         timeout_seconds: int | None = None,
+        max_rows: int | None = None,
     ) -> DatabaseExecutionResult:
-        """Execute one generated read-only validation query."""
+        """Execute one generated read-only validation query within a row cap."""
 
         return self._execute_controlled_query(
             sql=sql,
             parameters=parameters,
             database=None,
             timeout_seconds=timeout_seconds,
-            max_rows=None,
+            max_rows=max_rows,
             read_only=True,
             require_write_enabled=False,
         )

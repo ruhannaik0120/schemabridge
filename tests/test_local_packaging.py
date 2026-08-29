@@ -10,6 +10,7 @@ WORKSPACE = Path(__file__).resolve().parents[1]
 
 def test_docker_package_is_non_root_health_checked_and_migration_gated() -> None:
     dockerfile = (WORKSPACE / "Dockerfile").read_text(encoding="utf-8")
+    worker_dockerfile = (WORKSPACE / "Dockerfile.worker").read_text(encoding="utf-8")
     compose = (WORKSPACE / "compose.yaml").read_text(encoding="utf-8")
     ignore = (WORKSPACE / ".dockerignore").read_text(encoding="utf-8")
 
@@ -17,12 +18,21 @@ def test_docker_package_is_non_root_health_checked_and_migration_gated() -> None
     assert "HEALTHCHECK" in dockerfile
     assert "requirements-api.lock" in dockerfile
     assert "schemabridge.api.app:create_app" in dockerfile
-    for service in ("control-plane:", "migrate:", "api:"):
+    assert "USER schemabridge" in worker_dockerfile
+    assert "requirements-api.lock" in worker_dockerfile
+    assert 'CMD ["python", "-m", "scripts.run_sqs_migration_worker", "--forever"]' in worker_dockerfile
+    assert "HEALTHCHECK" not in worker_dockerfile
+    for service in ("control-plane:", "migrate:", "api:", "migration-worker:"):
         assert service in compose
     assert "service_healthy" in compose
     assert "service_completed_successfully" in compose
     assert "schemabridge-control-plane:" in compose
     assert "scripts.migrate_control_plane" in compose
+    assert "scripts.run_sqs_migration_worker" in compose
+    assert "dockerfile: Dockerfile.worker" in compose
+    assert "AWS_SHARED_CREDENTIALS_FILE" in compose
+    assert "/app/.aws:ro" in compose
+    assert "healthcheck:\n      disable: true" in compose
     assert "/health/ready" in compose
     assert "tests" in ignore and "**/.env" in ignore
     combined = (dockerfile + compose).casefold()

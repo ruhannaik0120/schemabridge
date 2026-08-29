@@ -10,6 +10,8 @@ It is a governed batch-migration backend rather than a general streaming platfor
 - [Architecture](docs/ARCHITECTURE.md) — components, request paths, databases, and design decisions.
 - [Setup](docs/SETUP.md) — clean-machine setup, configuration, operation, and troubleshooting.
 - [Automatic Spark transport](docs/SPARK_TRANSPORT.md) — large-table routing, safety boundary, and local verification.
+- [Strict validation](docs/STRICT_VALIDATION.md) — optional exact primary-key reconciliation, eligibility, and proof limits.
+- [Amazon SQS worker](docs/AWS_SQS_WORKER.md) — durable job notification, local worker setup, ECS Fargate deployment proof, and operational limits.
 - [Code guide](docs/CODE_GUIDE.md) — a recommended study order and file-by-file navigation.
 
 ## Architecture at a glance
@@ -39,7 +41,7 @@ The source and target are data-plane systems. The separate control-plane Postgre
 6. Compile a target-specific transformation preview from the approved plan and recorded staging evidence.
 7. Recompile, verify, claim, and execute the approved statement.
 8. After a confirmed commit, remove SchemaBridge-managed staging and persist cleanup evidence.
-9. Run generated read-only aggregate checks on source and target.
+9. Run generated read-only aggregate checks on source and target; optionally reconcile exact primary keys when the stored metadata and approved mapping make that safe.
 10. Reconcile results into `VALIDATED` or `VALIDATION_REVIEW_REQUIRED`.
 
 The lower-level `/api/v1/migrations` endpoints expose individual discovery, mapping, preview, and validation operations. The durable `/api/v1/migrations/workflows` endpoints add state transitions, artifacts, audit history, idempotency, optimistic concurrency, execution claims, and recovery states.
@@ -150,7 +152,7 @@ frontend/                         React and TypeScript operator interface
 
 - Batch transport selects source-reader and staging-writer roles by connector capability, not by vendor name. PostgreSQL, MySQL, and Snowflake currently implement both roles.
 - PostgreSQL, MySQL, and Snowflake have an optional, automatically selected Spark staging path for eligible large tables. PostgreSQL/MySQL use JDBC partitioning; Snowflake uses its dedicated Spark connector when that runtime package is configured.
-- Validation compares generated aggregates, not every row.
+- Standard validation compares generated aggregates, not every row. Optional strict validation additionally reconciles exact primary-key sets only when both discovered keys are complete and directly mapped; it is intended for moderate-sized tables.
 - Uncertain remote outcomes require manual investigation.
 - The initial React operator interface supports workflow creation, schema discovery, mapping review and approval, guided execution, durable background-job submission, and job/history viewing. Authentication, file ingestion, profiling, and production deployment remain to be added.
 - SQL Server remains a generic connector only. The three supported durable databases have mostly unit/fake-driver coverage; live end-to-end coverage remains limited.

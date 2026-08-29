@@ -8,13 +8,21 @@ sanitized domain failures.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from schemabridge.models.mapping import SqlDialect
 from schemabridge.models.validation import (
     MigrationValidationExecutionReport,
     MigrationValidationExecutionRequest,
+    MigrationValidationStatus,
     ValidationExecutionStatus,
 )
 from schemabridge.services.database_service import get_database_service
+from schemabridge.validation.key_batches import (
+    read_primary_key_batches,
+    reconcile_primary_key_batches,
+)
+from schemabridge.validation.primary_key import assess_primary_key_reconciliation
 from schemabridge.validation.reconciliation import reconcile_validation_results
 from schemabridge.validation.sql import compile_validation_sql
 
@@ -241,6 +249,65 @@ class MigrationValidationExecutionService:
             source_metrics=row(source_result),
             target_metrics=row(target_result),
         )
+        primary_key_reconciliation = None
+        warnings: tuple[str, ...] = ()
+        if request.strict_primary_key:
+            eligibility = assess_primary_key_reconciliation(
+                request.approved_mapping_plan,
+                source_table=request.source_table_metadata,
+                target_table=request.target_table_metadata,
+            )
+            if not eligibility.eligible:
+                report = replace(
+                    report,
+                    status=MigrationValidationStatus.INCOMPLETE,
+                    warnings=(eligibility.reason or "PRIMARY_KEY_UNAVAILABLE",),
+                )
+                warnings = report.warnings
+            else:
+                def relation(dialect, *, database, schema, table):
+                    if dialect is SqlDialect.SNOWFLAKE:
+                        return database, schema, table
+                    if dialect is SqlDialect.MYSQL:
+                        return database, table
+                    return schema, table
+
+                try:
+                    primary_key_reconciliation = reconcile_primary_key_batches(
+                        read_primary_key_batches(
+                            source.execute_validation_query,
+                            dialect=source_dialect,
+                            relation=(request.source_schema, request.source_table),
+                            key_columns=eligibility.source_key_columns,
+                            batch_size=request.primary_key_batch_size,
+                            timeout_seconds=request.timeout_seconds,
+                        ),
+                        read_primary_key_batches(
+                            target.execute_validation_query,
+                            dialect=target_dialect,
+                            relation=relation(
+                                target_dialect,
+                                database=request.target_database,
+                                schema=request.target_schema,
+                                table=request.target_table,
+                            ),
+                            key_columns=eligibility.target_key_columns,
+                            batch_size=request.primary_key_batch_size,
+                            timeout_seconds=request.timeout_seconds,
+                        ),
+                    )
+                except Exception:
+                    raise ValidationExecutionError(
+                        "Strict primary-key validation execution failed."
+                    ) from None
+                if not primary_key_reconciliation.matches:
+                    report = replace(
+                        report,
+                        status=MigrationValidationStatus.FAILED,
+                        mismatched_count=report.mismatched_count + 1,
+                        warnings=("STRICT_PRIMARY_KEY_MISMATCH",),
+                    )
+                    warnings = report.warnings
         return MigrationValidationExecutionReport(
             source_profile_id=request.source_profile_id,
             target_profile_id=request.target_profile_id,
@@ -249,4 +316,6 @@ class MigrationValidationExecutionService:
             validation_report=report,
             source_execution_status=ValidationExecutionStatus.SUCCEEDED,
             target_execution_status=ValidationExecutionStatus.SUCCEEDED,
+            primary_key_reconciliation=primary_key_reconciliation,
+            warnings=warnings,
         )

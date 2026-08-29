@@ -51,6 +51,15 @@ Control-plane PostgreSQL
 
 These paths meet in the orchestrators. Remote database work is performed outside the control-plane transaction, while durable claims and final evidence are stored before and after that remote boundary.
 
+When optional SQS notification is enabled, the queued-job path is:
+
+```text
+FastAPI job submission -> control-plane PostgreSQL job record -> SQS notification (job ID)
+                                                         -> ECS Fargate SQS worker -> exact PostgreSQL job claim -> migration pipeline
+```
+
+The SQS notification is deliberately not the job record. It may be delivered more than once, so the worker claims the exact queued PostgreSQL job before doing any remote migration work. In the hosted deployment, an ECS task role reads/deletes queue messages, an execution role pulls the ECR image and reads the control-plane secret, and the task reaches PostgreSQL through a security-group rule rather than a public database endpoint.
+
 ## Repository layers
 
 | Layer | Main modules | Responsibility |
@@ -188,7 +197,7 @@ This ordering prevents a stale preview, altered SQL, duplicate caller, or disabl
 
 `WorkflowValidationOrchestrator.validate` requires successful committed execution evidence and the approved mapping. It recompiles a safe validation plan, claims a validation run, marks it running, and delegates to `MigrationValidationExecutionService`.
 
-The execution service resolves the source and target profiles independently and asks each connector for its validation SQL dialect capability. PostgreSQL, MySQL, and Snowflake are implemented on both sides. It executes one read-only aggregate query per side and rejects malformed multi-row results.
+The execution service resolves the source and target profiles independently and asks each connector for its validation SQL dialect capability. PostgreSQL, MySQL, and Snowflake are implemented on both sides. It executes one read-only aggregate query per side and rejects malformed multi-row results. A caller may opt into strict primary-key reconciliation. That path rehydrates the latest persisted source and target discovery snapshots for the workflow and runs only when both primary keys are complete and the approved mapping is a direct, ordered one-to-one key mapping. It then reads generated, ordered key pages from both systems and persists counts only, never key values. See [Strict validation](STRICT_VALIDATION.md).
 
 ### 9. Reconciliation
 

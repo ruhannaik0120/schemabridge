@@ -172,6 +172,21 @@ class InMemoryWorkflowRepository:
             self._jobs[job.job_id] = claimed
             return claimed
 
+    def claim_migration_job(self, job_id, started_at):
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status is not MigrationJobStatus.QUEUED:
+                return None
+
+            claimed = replace(
+                job,
+                status=MigrationJobStatus.RUNNING,
+                stage=MigrationJobStage.PREPARING,
+                started_at=started_at,
+            )
+            self._jobs[job_id] = claimed
+            return claimed
+
     def update_migration_job_stage(self, job_id, expected_stage, new_stage):
         with self._lock:
             job = self.get_migration_job(job_id)

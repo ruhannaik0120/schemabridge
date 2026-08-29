@@ -51,6 +51,7 @@ from schemabridge.models.validation import (
     MigrationValidationExecutionReport,
     MigrationValidationReport,
     MigrationValidationStatus,
+    PrimaryKeyReconciliation,
     ValidationCheckDefinition,
     ValidationCheckResult,
     ValidationCheckType,
@@ -411,6 +412,10 @@ def _validation_report(value: object) -> MigrationValidationReport:
     return MigrationValidationReport(**data)
 
 
+def _primary_key_reconciliation(value: object) -> PrimaryKeyReconciliation:
+    return PrimaryKeyReconciliation(**dict(_mapping(value)))
+
+
 def validation_execution_report_from_artifact(
     artifact: WorkflowArtifact,
 ) -> MigrationValidationExecutionReport:
@@ -425,6 +430,10 @@ def validation_execution_report_from_artifact(
         data["validation_report"] = _validation_report(data["validation_report"])
         data["source_execution_status"] = ValidationExecutionStatus(data["source_execution_status"])
         data["target_execution_status"] = ValidationExecutionStatus(data["target_execution_status"])
+        primary_key = data.get("primary_key_reconciliation")
+        data["primary_key_reconciliation"] = (
+            _primary_key_reconciliation(primary_key) if primary_key is not None else None
+        )
         data["warnings"] = _tuple(data.get("warnings", []))
         return MigrationValidationExecutionReport(**data)
     except WorkflowArtifactValidationError:

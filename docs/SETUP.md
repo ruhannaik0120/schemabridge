@@ -128,12 +128,19 @@ The normal suite does not use live databases. The following variables enable exp
 | `SCHEMABRIDGE_CONTROL_PLANE_TEST_DSN` | DSN for that contract; its database name must clearly contain `test`. |
 | `SCHEMABRIDGE_POSTGRES_INTEGRATION` | Set to `1` to enable live PostgreSQL discovery coverage. |
 | `SCHEMABRIDGE_POSTGRES_HOST`, `SCHEMABRIDGE_POSTGRES_PORT`, `SCHEMABRIDGE_POSTGRES_DATABASE`, `SCHEMABRIDGE_POSTGRES_USERNAME`, `SCHEMABRIDGE_POSTGRES_PASSWORD` | Connection values for the opt-in PostgreSQL discovery check. |
+| `SCHEMABRIDGE_STRICT_VALIDATION_POSTGRES_INTEGRATION` | Set to `1` to enable the disposable PostgreSQL strict-validation proof using the same `SCHEMABRIDGE_POSTGRES_*` connection values. |
 | `DB_SMOKE_TEST_CONNECT` | Set to `true` only when the generic connector smoke test should make a live connection. |
 | `SCHEMABRIDGE_SPARK_POSTGRES_INTEGRATION` and `SCHEMABRIDGE_SPARK_POSTGRES_*` | Enable and configure the disposable PostgreSQL-to-Spark-to-PostgreSQL proof. |
 | `SCHEMABRIDGE_SPARK_MYSQL_INTEGRATION` and `SCHEMABRIDGE_SPARK_MYSQL_*` | Enable and configure the disposable MySQL-to-Spark-to-MySQL proof. |
 | `SCHEMABRIDGE_SPARK_SNOWFLAKE_INTEGRATION` and `SCHEMABRIDGE_SPARK_SNOWFLAKE_*` | Enable and configure the non-production Snowflake-to-Spark-to-Snowflake proof. |
 
 Keep all flags disabled for credential-free verification.
+
+### Optional Amazon SQS job notification
+
+Set both `SCHEMABRIDGE_AWS_REGION` and `SCHEMABRIDGE_SQS_QUEUE_URL` only when this API process should publish newly created durable migration jobs to SQS. AWS credentials come from the standard AWS credential chain, not this file. With either variable blank, SchemaBridge keeps the existing local-worker behavior.
+
+The SQS worker also requires `SCHEMABRIDGE_CONTROL_PLANE_DSN`, because PostgreSQL remains the source of truth for job state. See [Amazon SQS worker](AWS_SQS_WORKER.md) for least-privilege IAM permissions, the local one-cycle worker command, and operational limits.
 
 For automatic large-table Spark routing, see [Automatic Spark transport](SPARK_TRANSPORT.md). Install `requirements-spark.txt` only on hosts that should run Spark. The normal transport path remains available when PySpark is absent.
 
@@ -164,6 +171,8 @@ POSIX:
 ```
 
 The normal suite uses fakes at remote boundaries. Live integration contracts are skipped unless explicitly enabled.
+
+For the optional exact primary-key validation mode, its eligibility rules, and the PostgreSQL duplicate-key limitation, see [Strict validation](STRICT_VALIDATION.md).
 
 ## Inspect control-plane migrations without a database
 
@@ -288,6 +297,9 @@ Compose starts:
 1. `control-plane`, with a PostgreSQL health check;
 2. `migrate`, which applies migrations once;
 3. `api`, after migration completion.
+4. `migration-worker`, when explicitly requested, which continuously receives optional SQS migration notifications.
+
+The worker is deliberately not included in a normal `docker compose up` unless its service is requested. For the Windows local SQS Compose proof, see [Amazon SQS worker](AWS_SQS_WORKER.md).
 
 The repository statically verifies this configuration. The latest project verification does not claim a successful Docker image build or healthy running stack.
 

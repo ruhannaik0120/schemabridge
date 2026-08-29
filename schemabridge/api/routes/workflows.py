@@ -565,6 +565,8 @@ async def validate_workflow_migration(
             source_profile_id=command.source_profile_id,
             target_profile_id=command.target_profile_id,
             timeout_seconds=command.timeout_seconds,
+            strict_primary_key=command.strict_primary_key,
+            primary_key_batch_size=command.primary_key_batch_size,
             **_planning_context(command, request, idempotency_key),
         )
         report = execution_report_to_api(result.report)

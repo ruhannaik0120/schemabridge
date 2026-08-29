@@ -115,7 +115,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             {"name": "health", "description": "Operational health checks."},
             {"name": "migrations", "description": "Versioned migration workflows."},
             {"name": "migration-jobs", "description": "Durable background migration work orders."},
-            {"name": "profiles", "description": "Credential-free configured connection profile metadata."},
+            {"name": "profiles", "description": "Safe configured connection-profile metadata."},
         ],
         responses={
             422: {"model": ErrorResponse, "description": "Request validation failed."},

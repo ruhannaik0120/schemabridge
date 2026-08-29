@@ -1,6 +1,7 @@
 """Verify the small boundary between job claiming and pipeline processing."""
 
 from datetime import timedelta
+from uuid import UUID
 
 import pytest
 
@@ -88,6 +89,31 @@ def test_worker_claims_one_job_and_passes_it_to_processor() -> None:
     assert result.status is MigrationJobStatus.SUCCEEDED
     assert result.stage is MigrationJobStage.COMPLETED
     assert repository.get_migration_job(JOB_ID) == result
+
+
+def test_worker_claims_the_requested_job_id_and_passes_it_to_processor() -> None:
+    worker, repository = _worker(RecordingProcessor)
+
+    result = worker.run(JOB_ID)
+
+    assert len(worker.processor.calls) == 1
+    assert worker.processor.calls[0].job_id == JOB_ID
+    assert result is not None
+    assert result.status is MigrationJobStatus.SUCCEEDED
+    assert repository.get_migration_job(JOB_ID) == result
+
+
+def test_worker_does_not_process_an_unknown_requested_job_id() -> None:
+    worker, repository = _worker(
+        lambda _persistence: MustNotRunProcessor(),
+    )
+
+    result = worker.run(UUID("99999999-9999-9999-9999-999999999999"))
+
+    assert result is None
+    assert repository.get_migration_job(JOB_ID).status is (
+        MigrationJobStatus.QUEUED
+    )
 
 
 def test_worker_rejects_a_processor_that_returns_an_unfinished_job() -> None:

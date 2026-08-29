@@ -213,7 +213,7 @@ Validation uses the same principle and enters `VALIDATION_RECOVERY_REQUIRED` whe
 
 - Live verification has covered one five-row PostgreSQL-to-Snowflake workflow with automatic managed staging, committed execution, aggregate validation, exact replay, and post-commit staging cleanup; production scale and failure recovery have not been live-tested.
 - Batch transport is synchronous and is not optimized as a bulk-file or streaming engine.
-- Validation compares aggregates rather than every row.
+- Standard validation compares aggregates rather than every row. An optional strict mode reconciles exact primary-key sets when both discovery snapshots expose complete keys and the approved mapping directly preserves them; it is intended for moderate-sized tables.
 - PostgreSQL/MySQL Spark staging has local live proof coverage; Snowflake Spark has an opt-in harness but still requires live non-production credential verification.
 - There is no authentication or authorization layer around the HTTP API.
 - The repository includes durable queued jobs and a run-once local worker, but no continuously hosted worker service or distributed scheduler.

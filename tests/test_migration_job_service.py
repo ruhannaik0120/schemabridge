@@ -42,6 +42,14 @@ class IDs:
         return next(self.values)
 
 
+class RecordingPublisher:
+    def __init__(self) -> None:
+        self.published_job_ids: list[UUID] = []
+
+    def publish(self, job_id: UUID) -> None:
+        self.published_job_ids.append(job_id)
+
+
 def _artifact(kind, version, marker):
     payload = (f'{{"marker":"{marker}"}}').encode("utf-8")
     return WorkflowArtifact(
@@ -56,7 +64,7 @@ def _artifact(kind, version, marker):
     )
 
 
-def _service(*, workflow=None):
+def _service(*, workflow=None, job_publisher=None):
     repository = InMemoryWorkflowRepository()
     value = workflow or _workflow()
     repository._workflows[WORKFLOW_ID] = value
@@ -68,6 +76,7 @@ def _service(*, workflow=None):
         WorkflowPersistenceService(repository),
         clock=lambda: NOW,
         uuid_factory=IDs(),
+        job_publisher=job_publisher,
     )
     return service, repository
 
@@ -100,6 +109,19 @@ def test_service_controls_identity_profiles_hash_and_initial_state() -> None:
     assert job.status is MigrationJobStatus.QUEUED
     assert job.stage is MigrationJobStage.QUEUED
     assert len(job.job_fingerprint) == 64
+
+
+def test_new_job_is_published_once_and_replay_is_not_published_again() -> None:
+    publisher = RecordingPublisher()
+    service, _repository = _service(job_publisher=publisher)
+
+    original, created = _create(service)
+    replay, replay_created = _create(service)
+
+    assert created is True
+    assert replay_created is False
+    assert replay == original
+    assert publisher.published_job_ids == [JOB_ID]
 
 
 def test_exact_replay_returns_original_job_after_workflow_progresses() -> None:
@@ -254,3 +276,30 @@ def test_completion_service_distinguishes_success_failure_and_uncertainty() -> N
     assert uncertain.stage is MigrationJobStage.EXECUTING
     assert review.status is MigrationJobStatus.REVIEW_REQUIRED
     assert review.stage is MigrationJobStage.VALIDATING
+
+def test_claim_service_claims_only_the_requested_queued_job() -> None:
+    submission, repository = _service()
+    requested, _created = _create(submission)
+    unrelated = replace(
+        requested,
+        job_id=UUID("33333333-4444-5555-6666-777777777777"),
+        job_fingerprint="b" * 64,
+        idempotency_key="unrelated-queued-job",
+    )
+    repository._jobs[unrelated.job_id] = unrelated
+
+    claim_service = MigrationJobClaimService(
+        WorkflowPersistenceService(repository),
+        clock=lambda: NOW,
+    )
+
+    claimed = claim_service.claim(requested.job_id)
+
+    assert claimed is not None
+    assert claimed.job_id == requested.job_id
+    assert claimed.status is MigrationJobStatus.RUNNING
+    assert repository.get_migration_job(unrelated.job_id).status is (
+        MigrationJobStatus.QUEUED
+    )
+    assert claim_service.claim(requested.job_id) is None
+    assert claim_service.claim(UUID("99999999-9999-9999-9999-999999999999")) is None
