@@ -87,6 +87,15 @@ class WorkflowRepository(Protocol):
 
         ...
 
+    def claim_migration_job(
+        self,
+        job_id: UUID,
+        started_at: datetime,
+    ) -> MigrationJob | None:
+        """Atomically claim this queued job, or return None when unavailable."""
+
+        ...
+
     def update_migration_job_stage(
         self,
         job_id: UUID,

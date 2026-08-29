@@ -1,0 +1,20 @@
+FROM python:3.12.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements-api.lock /tmp/requirements-api.lock
+RUN python -m pip install --no-cache-dir -r /tmp/requirements-api.lock \
+    && groupadd --system schemabridge \
+    && useradd --system --gid schemabridge --home-dir /app --shell /usr/sbin/nologin schemabridge
+
+COPY --chown=schemabridge:schemabridge schemabridge /app/schemabridge
+COPY --chown=schemabridge:schemabridge scripts /app/scripts
+
+USER schemabridge
+
+CMD ["python", "-m", "scripts.run_sqs_migration_worker", "--forever"]

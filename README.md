@@ -11,6 +11,7 @@ It is a governed batch-migration backend rather than a general streaming platfor
 - [Setup](docs/SETUP.md) — clean-machine setup, configuration, operation, and troubleshooting.
 - [Automatic Spark transport](docs/SPARK_TRANSPORT.md) — large-table routing, safety boundary, and local verification.
 - [Strict validation](docs/STRICT_VALIDATION.md) — optional exact primary-key reconciliation, eligibility, and proof limits.
+- [Amazon SQS worker](docs/AWS_SQS_WORKER.md) — durable job notification, local worker setup, ECS Fargate deployment proof, and operational limits.
 - [Code guide](docs/CODE_GUIDE.md) — a recommended study order and file-by-file navigation.
 
 ## Architecture at a glance

@@ -175,9 +175,29 @@ def get_migration_job_submission_service(
 ):
     """Build the service that validates and records queued migration jobs."""
 
+    from schemabridge.services.jobs.config import SqsJobQueueSettings
     from schemabridge.services.jobs.lifecycle import MigrationJobSubmissionService
+    from schemabridge.services.jobs.sqs import (
+        SqsMigrationJobPublisher,
+        create_sqs_client,
+    )
 
-    return MigrationJobSubmissionService(persistence)
+    settings = SqsJobQueueSettings.from_environment()
+    publisher = None
+
+    if settings.enabled:
+        assert settings.region_name is not None
+        assert settings.queue_url is not None
+
+        publisher = SqsMigrationJobPublisher(
+            create_sqs_client(region_name=settings.region_name),
+            queue_url=settings.queue_url,
+        )
+
+    return MigrationJobSubmissionService(
+        persistence,
+        job_publisher=publisher,
+    )
 
 
 def get_workflow_planning_orchestrator(

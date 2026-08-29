@@ -57,5 +57,33 @@ services:
     stop_grace_period: 20s
     restart: unless-stopped
 
+  migration-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      SCHEMABRIDGE_CONTROL_PLANE_DSN: postgresql://${SCHEMABRIDGE_CONTROL_PLANE_USER:-schemabridge}:${SCHEMABRIDGE_CONTROL_PLANE_PASSWORD:-local_only_change_me}@control-plane:5432/${SCHEMABRIDGE_CONTROL_PLANE_DB:-schemabridge}
+      SCHEMABRIDGE_AWS_REGION: ${SCHEMABRIDGE_AWS_REGION:-}
+      SCHEMABRIDGE_SQS_QUEUE_URL: ${SCHEMABRIDGE_SQS_QUEUE_URL:-}
+      DB_TYPE: demo
+      DB_HOST: demo-local
+      DB_DATABASE: schemabridge_demo
+      DB_PROFILES_JSON: '${DB_PROFILES_JSON:-}'
+      DB_TIMEOUT_SECONDS: ${DB_TIMEOUT_SECONDS:-30}
+      DB_MAX_ROWS: ${DB_MAX_ROWS:-500}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      AWS_CONFIG_FILE: /app/.aws/config
+      AWS_SHARED_CREDENTIALS_FILE: /app/.aws/credentials
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ${USERPROFILE}/.aws:/app/.aws:ro
+    command: ["python", "-m", "scripts.run_sqs_migration_worker", "--forever"]
+    healthcheck:
+      disable: true
+    stop_grace_period: 30s
+    restart: unless-stopped
+
 volumes:
   schemabridge-control-plane:

@@ -161,6 +161,9 @@ class WorkflowPersistenceService:
     def claim_next_migration_job(self, started_at):
         return self.repository.claim_next_migration_job(started_at)
 
+    def claim_migration_job(self, job_id, started_at):
+        return self.repository.claim_migration_job(job_id, started_at)
+
     def update_migration_job_stage(self, job_id, expected_stage, new_stage):
         return self.repository.update_migration_job_stage(
             job_id, expected_stage, new_stage

@@ -14,7 +14,7 @@ If you are new to SchemaBridge, read the files in this order.
 10. `schemabridge/services/database_service.py` — profile-bound database access.
 11. `schemabridge/mapping/` — deterministic suggestions, human approval, and transformation SQL.
 12. `schemabridge/validation/` — validation generation, execution, reconciliation, and SQL safety.
-13. `schemabridge/services/jobs/` — queued-job lifecycle, pipeline, runtime assembly, and worker.
+13. `schemabridge/services/jobs/` — queued-job lifecycle, SQS notification boundary, pipeline, runtime assembly, and worker.
 14. `schemabridge/transport/spark/` — automatically selected large-table transport.
 15. `schemabridge/persistence/repository.py` and `postgresql.py` — the durable control plane.
 16. `schemabridge/connectors/` — concrete PostgreSQL, MySQL, and Snowflake boundaries.

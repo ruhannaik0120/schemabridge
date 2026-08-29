@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Protocol
+from uuid import UUID
 
 from schemabridge.models.migration_job import MigrationJob, MigrationJobStatus
 from schemabridge.services.jobs.lifecycle import MigrationJobClaimService
@@ -32,10 +33,22 @@ class MigrationJobWorker:
         self.claim_service = claim_service
         self.processor = processor
 
+    def run(self, job_id: UUID) -> MigrationJob | None:
+        """Claim and process one exact durable job ID."""
+
+        return self._process_claimed(self.claim_service.claim(job_id))
+
     def run_once(self) -> MigrationJob | None:
         """Process one available job, or return immediately when none is queued."""
 
-        claimed = self.claim_service.claim_next()
+        return self._process_claimed(self.claim_service.claim_next())
+
+    def _process_claimed(
+        self,
+        claimed: MigrationJob | None,
+    ) -> MigrationJob | None:
+        """Process one already-claimed job and validate its terminal result."""
+
         if claimed is None:
             return None
         result = self.processor.process(claimed)

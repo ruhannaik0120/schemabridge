@@ -599,6 +599,63 @@ class PostgreSQLWorkflowRepository:
         finally:
             self._close(connection)
 
+    def claim_migration_job(self, job_id, started_at):
+        """Lock and claim one named queued job without racing another worker."""
+
+        connection = self._open()
+        try:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"SELECT {_JOB_COLUMNS} FROM migration_jobs "
+                        "WHERE job_id=%s AND status='QUEUED' "
+                        "FOR UPDATE SKIP LOCKED",
+                        (job_id,),
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        return None
+
+                    job = self._migration_job(row)
+                    cursor.execute(
+                        "UPDATE migration_jobs "
+                        "SET status='RUNNING',stage='PREPARING',started_at=%s "
+                        "WHERE job_id=%s AND status='QUEUED'",
+                        (started_at, job.job_id),
+                    )
+                    if cursor.rowcount != 1:
+                        raise WorkflowPersistenceError()
+
+                    return MigrationJob(
+                        job_id=job.job_id,
+                        workflow_id=job.workflow_id,
+                        expected_workflow_version=job.expected_workflow_version,
+                        source_discovery_artifact_version=(
+                            job.source_discovery_artifact_version
+                        ),
+                        approved_mapping_artifact_version=(
+                            job.approved_mapping_artifact_version
+                        ),
+                        source_profile_id=job.source_profile_id,
+                        target_profile_id=job.target_profile_id,
+                        batch_size=job.batch_size,
+                        timeout_seconds=job.timeout_seconds,
+                        job_fingerprint=job.job_fingerprint,
+                        status=MigrationJobStatus.RUNNING,
+                        stage=MigrationJobStage.PREPARING,
+                        queued_at=job.queued_at,
+                        actor_type=job.actor_type,
+                        idempotency_key=job.idempotency_key,
+                        actor_reference=job.actor_reference,
+                        started_at=started_at,
+                    )
+        except WorkflowError:
+            raise
+        except Exception:
+            raise WorkflowPersistenceError() from None
+        finally:
+            self._close(connection)
+
     def update_migration_job_stage(self, job_id, expected_stage, new_stage):
         """Advance one locked running job only when the caller's stage is current."""
 

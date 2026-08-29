@@ -51,6 +51,15 @@ Control-plane PostgreSQL
 
 These paths meet in the orchestrators. Remote database work is performed outside the control-plane transaction, while durable claims and final evidence are stored before and after that remote boundary.
 
+When optional SQS notification is enabled, the queued-job path is:
+
+```text
+FastAPI job submission -> control-plane PostgreSQL job record -> SQS notification (job ID)
+                                                         -> ECS Fargate SQS worker -> exact PostgreSQL job claim -> migration pipeline
+```
+
+The SQS notification is deliberately not the job record. It may be delivered more than once, so the worker claims the exact queued PostgreSQL job before doing any remote migration work. In the hosted deployment, an ECS task role reads/deletes queue messages, an execution role pulls the ECR image and reads the control-plane secret, and the task reaches PostgreSQL through a security-group rule rather than a public database endpoint.
+
 ## Repository layers
 
 | Layer | Main modules | Responsibility |

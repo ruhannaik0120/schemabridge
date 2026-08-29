@@ -634,6 +634,48 @@ def test_postgresql_claim_returns_none_when_queue_is_empty() -> None:
     assert connection.closed is True
 
 
+def test_postgresql_claims_only_the_requested_queued_job() -> None:
+    cursor = ClaimCursor(_job_row())
+    connection = CreateConnection(cursor)
+    repository = PostgreSQLWorkflowRepository(
+        ControlPlaneConfig(dsn="secret-dsn"),
+        connect=lambda _dsn: connection,
+    )
+    started_at = NOW + timedelta(seconds=1)
+
+    claimed = repository.claim_migration_job(JOB_ID, started_at)
+
+    assert claimed is not None
+    assert claimed.job_id == JOB_ID
+    assert claimed.status is MigrationJobStatus.RUNNING
+    assert claimed.stage is MigrationJobStage.PREPARING
+    assert claimed.started_at == started_at
+
+    select_sql, select_parameters = cursor.calls[0]
+    assert "WHERE job_id=%s AND status='QUEUED'" in select_sql
+    assert "FOR UPDATE SKIP LOCKED" in select_sql
+    assert select_parameters == (JOB_ID,)
+
+    update_sql, update_parameters = cursor.calls[1]
+    assert "status='QUEUED'" in update_sql
+    assert update_parameters == (started_at, JOB_ID)
+    assert connection.closed is True
+
+
+def test_postgresql_exact_claim_returns_none_when_job_is_unavailable() -> None:
+    cursor = ClaimCursor(None)
+    connection = CreateConnection(cursor)
+    repository = PostgreSQLWorkflowRepository(
+        ControlPlaneConfig(dsn="secret-dsn"),
+        connect=lambda _dsn: connection,
+    )
+
+    assert repository.claim_migration_job(JOB_ID, NOW) is None
+    assert len(cursor.calls) == 1
+    assert cursor.calls[0][1] == (JOB_ID,)
+    assert connection.closed is True
+
+
 def test_postgresql_stage_progress_locks_checks_and_updates() -> None:
     running = replace(
         _job(),
